@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+README.md
+.env
+.env.local
+.env.*.local
+dist
+coverage
+.DS_Store
+.vscode
+.idea
+*.log
+.prettier
+.eslintrc
+prisma/migrations

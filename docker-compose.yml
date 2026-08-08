@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tipforge-postgres
+    environment:
+      POSTGRES_USER: tipforge
+      POSTGRES_PASSWORD: tipforge_dev_password
+      POSTGRES_DB: tipforge
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tipforge']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tipforge-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tipforge-backend
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://tipforge:tipforge_dev_password@postgres:5432/tipforge
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+      LOG_LEVEL: debug
+      JWT_SECRET: dev-secret-key-change-in-production
+      STELLAR_NETWORK: testnet
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      STELLAR_SERVER_SECRET_KEY: ${STELLAR_SERVER_SECRET_KEY}
+      USDC_CONTRACT_ID: ${USDC_CONTRACT_ID}
+      USDC_ISSUER: ${USDC_ISSUER}
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./prisma:/app/prisma
+    command: pnpm dev
+    networks:
+      - tipforge-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  tipforge-network:
+    driver: bridge
