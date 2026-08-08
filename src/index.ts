@@ -2,6 +2,9 @@ import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import { config } from './config/env';
 import { AppError } from './utils/errors';
+import { PrismaClient } from '@prisma/client';
+import { registerAuthRoutes } from './domains/auth/auth.routes';
+import { registerPaymentRoutes } from './domains/payments/payment.routes';
 
 const app = Fastify({
   logger: {
@@ -9,11 +12,18 @@ const app = Fastify({
   },
 });
 
+// Initialize Prisma
+const prisma = new PrismaClient();
+
 // Register plugins
 app.register(cors, {
   origin: true,
   credentials: true,
 });
+
+// Register routes
+registerAuthRoutes(app, prisma);
+registerPaymentRoutes(app, prisma);
 
 // Health check endpoint
 app.get('/health', async (_request, _reply) => {
