@@ -1,4 +1,4 @@
-import * as StellarSdk from 'stellar-sdk';
+import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 

@@ -27,9 +27,9 @@
     "pino-pretty": "^10.3.1",
     "pg": "^8.11.3",
     "@prisma/client": "^5.17.0",
-    "jsonwebtoken": "^9.1.2",
+    "jsonwebtoken": "^9.0.3",
     "bcryptjs": "^2.4.3",
-    "stellar-sdk": "^12.0.0",
+    "@stellar/stellar-sdk": "^12.3.0",
     "axios": "^1.7.2"
   },
   "devDependencies": {

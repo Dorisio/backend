@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateWalletNonce, verifyAndLinkWallet, getUserWallets, unlinkWallet } from './wallet';
-import * as StellarSdk from 'stellar-sdk';
+import * as StellarSdk from '@stellar/stellar-sdk';
 
 // Mock Stellar SDK
 vi.mock('stellar-sdk', () => ({

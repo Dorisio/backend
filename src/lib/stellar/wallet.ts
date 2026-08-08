@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import * as StellarSdk from 'stellar-sdk';
+import * as StellarSdk from '@stellar/stellar-sdk';
 import { randomBytes } from 'crypto';
 import { buildChallengeTransaction, verifyChallengeTransaction } from './transactions';
 import { getStellarClient } from './client';
