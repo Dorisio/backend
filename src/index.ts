@@ -4,6 +4,7 @@ import { config } from './config/env';
 import { AppError } from './utils/errors';
 import { PrismaClient } from '@prisma/client';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
+import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
 
 const app = Fastify({
@@ -23,6 +24,7 @@ app.register(cors, {
 
 // Register routes
 registerAuthRoutes(app, prisma);
+registerWalletRoutes(app, prisma);
 registerPaymentRoutes(app, prisma);
 
 // Health check endpoint

@@ -136,4 +136,100 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
       }
     }
   );
+
+  // POST /api/v1/transactions/:id/build - Build Stellar payment transaction
+  app.post<{ Params: { id: string }; Body: any }>(
+    '/api/v1/transactions/:id/build',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params;
+        const body = CreateTipSchema.parse(request.body);
+        const user = request.user;
+
+        if (!user) {
+          throw new Error('User not found in request');
+        }
+
+        const buildSchema = CreateTipSchema.extend({
+          senderPublicKey: CreateTipSchema.shape.creatorId,
+          creatorPublicKey: CreateTipSchema.shape.creatorId,
+        });
+
+        const { senderPublicKey, creatorPublicKey, amount } = request.body;
+
+        const transactionEnvelope = await paymentService.buildPaymentTransaction(
+          id,
+          senderPublicKey,
+          creatorPublicKey,
+          amount.toString(),
+          'USDC',
+          process.env.USDC_ISSUER
+        );
+
+        reply.send(
+          formatSuccess({
+            transactionEnvelope,
+            tipId: id,
+          })
+        );
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/transactions/:id/submit - Submit signed Stellar transaction
+  app.post<{ Params: { id: string }; Body: any }>(
+    '/api/v1/transactions/:id/submit',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params;
+        const { transactionEnvelope } = request.body;
+
+        if (!transactionEnvelope) {
+          throw new ValidationError('Signed transaction envelope is required');
+        }
+
+        const result = await paymentService.submitPaymentTransaction(id, transactionEnvelope);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // GET /api/v1/transactions/:id/confirm - Check transaction confirmation
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/transactions/:id/confirm',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { id } = request.params;
+        const result = await paymentService.checkTransactionConfirmation(id);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
 };

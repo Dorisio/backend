@@ -11,6 +11,12 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
   JWT_SECRET: z.string().default('your-secret-key-change-in-production'),
   JWT_EXPIRES_IN: z.string().default('7d'),
+  STELLAR_NETWORK: z.enum(['testnet', 'mainnet', 'standalone']).default('testnet'),
+  STELLAR_HORIZON_URL: z.string().default('https://horizon-testnet.stellar.org'),
+  STELLAR_SERVER_SECRET_KEY: z.string().optional(),
+  USDC_CONTRACT_ID: z.string().optional(),
+  USDC_ISSUER: z.string().optional(),
+  WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
 });
 
 type Environment = z.infer<typeof EnvSchema>;

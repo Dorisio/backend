@@ -2,6 +2,12 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { CreateTipRequest, UpdateTipStatusRequest, TipResponse, TipStatus } from './payment.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
+import {
+  buildPaymentTransaction,
+  submitSignedTransaction,
+  checkTransactionStatus,
+} from '../../lib/stellar/transactions';
+import { logger } from '../../utils/logger';
 
 export class PaymentService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -191,6 +197,102 @@ export class PaymentService extends BaseService {
       }
 
       return this.formatTipResponse(updatedTip);
+    });
+  }
+
+  /**
+   * Build and return a Stellar payment transaction for frontend signing
+   */
+  async buildPaymentTransaction(
+    tipId: string,
+    senderPublicKey: string,
+    creatorPublicKey: string,
+    amount: string,
+    assetCode?: string,
+    assetIssuer?: string
+  ): Promise<string> {
+    return this.executeWithLogging('payment.buildTransaction', async () => {
+      const tip = await this.prisma.tip.findUnique({
+        where: { id: tipId },
+      });
+
+      if (!tip) {
+        throw new NotFoundError('Tip');
+      }
+
+      // Build transaction
+      const transactionBuilder = await buildPaymentTransaction({
+        senderPublicKey,
+        recipientPublicKey: creatorPublicKey,
+        amount,
+        assetCode,
+        assetIssuer,
+        memo: `tip-${tipId}`,
+      });
+
+      const transaction = transactionBuilder.build();
+      const transactionEnvelope = transaction.toEnvelope().toXDR();
+
+      logger.debug(`Payment transaction built for tip: ${tipId}`);
+      return transactionEnvelope;
+    });
+  }
+
+  /**
+   * Submit a signed payment transaction and store the transaction hash
+   */
+  async submitPaymentTransaction(tipId: string, transactionEnvelope: string): Promise<TipResponse> {
+    return this.executeWithLogging('payment.submitTransaction', async () => {
+      const tip = await this.prisma.tip.findUnique({
+        where: { id: tipId },
+      });
+
+      if (!tip) {
+        throw new NotFoundError('Tip');
+      }
+
+      // Submit transaction
+      const result = await submitSignedTransaction(transactionEnvelope);
+
+      // Store transaction hash in tip
+      const updatedTip = await this.prisma.tip.update({
+        where: { id: tipId },
+        data: {
+          transactionHash: result.transactionHash,
+        },
+      });
+
+      logger.info(
+        `Payment transaction submitted for tip: ${tipId}, hash: ${result.transactionHash}`
+      );
+      return this.formatTipResponse(updatedTip);
+    });
+  }
+
+  /**
+   * Check and update transaction confirmation status
+   */
+  async checkTransactionConfirmation(tipId: string): Promise<TipResponse> {
+    return this.executeWithLogging('payment.checkConfirmation', async () => {
+      const tip = await this.prisma.tip.findUnique({
+        where: { id: tipId },
+      });
+
+      if (!tip) {
+        throw new NotFoundError('Tip');
+      }
+
+      if (!tip.transactionHash) {
+        throw new ValidationError('No transaction hash found for this tip');
+      }
+
+      const confirmationResult = await checkTransactionStatus(tip.transactionHash);
+
+      if (confirmationResult.confirmed && tip.status === TipStatus.PENDING) {
+        return this.updateTipStatus(tipId, { status: TipStatus.COMPLETED });
+      }
+
+      return this.formatTipResponse(tip);
     });
   }
 
