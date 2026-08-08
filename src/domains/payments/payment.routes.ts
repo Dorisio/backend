@@ -4,6 +4,7 @@ import { PaymentService } from './payment.service';
 import { CreateTipSchema, UpdateTipStatusSchema } from './payment.types';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
+import { rateLimitTipCreation } from '../../middleware/rate-limit';
 import { ValidationError, AppError } from '../../utils/errors';
 
 export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
@@ -12,7 +13,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
   // POST /api/v1/transactions/tip - Create a new tip
   app.post<{ Body: any }>(
     '/api/v1/transactions/tip',
-    { preHandler: authMiddleware },
+    { preHandler: [authMiddleware, rateLimitTipCreation] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const body = CreateTipSchema.parse(request.body);

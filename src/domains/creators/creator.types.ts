@@ -17,8 +17,14 @@ export const UpdateCreatorRequestSchema = z.object({
   isPublic: z.boolean().optional(),
 });
 
+export const CreatorPayoutSchema = z.object({
+  amount: z.number().positive('Amount must be greater than 0'),
+  walletAddress: z.string().optional(),
+});
+
 export type CreateCreatorRequest = z.infer<typeof CreateCreatorRequestSchema>;
 export type UpdateCreatorRequest = z.infer<typeof UpdateCreatorRequestSchema>;
+export type CreatorPayoutRequest = z.infer<typeof CreatorPayoutSchema>;
 
 export interface CreatorResponse {
   id: string;
@@ -31,5 +37,29 @@ export interface CreatorResponse {
   isPublic: boolean;
   totalEarnings: number;
   pendingBalance: number;
+  createdAt: string;
+}
+
+export interface CreatorDashboardResponse {
+  creator: CreatorResponse;
+  totalTips: number;
+  recentTips: Array<{
+    id: string;
+    amount: number;
+    senderName: string | null;
+    message: string | null;
+    createdAt: string;
+  }>;
+  earnings: {
+    totalEarnings: number;
+    pendingBalance: number;
+    paidOut: number;
+  };
+}
+
+export interface PayoutHistoryResponse {
+  id: string;
+  amount: number;
+  status: string;
   createdAt: string;
 }

@@ -6,6 +6,8 @@ import { PrismaClient } from '@prisma/client';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
+import { registerUserRoutes } from './domains/users/user.routes';
+import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 
 const app = Fastify({
   logger: {
@@ -26,6 +28,8 @@ app.register(cors, {
 registerAuthRoutes(app, prisma);
 registerWalletRoutes(app, prisma);
 registerPaymentRoutes(app, prisma);
+registerUserRoutes(app, prisma);
+registerCreatorPayoutRoutes(app, prisma);
 
 // Health check endpoint
 app.get('/health', async (_request, _reply) => {
