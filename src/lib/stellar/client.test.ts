@@ -1,5 +1,14 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { StellarClient } from './client';
+
+// Mock config before importing anything that uses it
+vi.mock('../../config/env', () => ({
+  config: {
+    STELLAR_NETWORK: 'testnet',
+    STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
+    STELLAR_SERVER_SECRET_KEY: 'SBFB5VXFZLMG5BQ7MFP6G7BQYQ5YQZLKQYQZLKQYQZLKQYQZLKQYQZLK',
+  },
+}));
 
 // Mock Stellar SDK with correct package name
 vi.mock('@stellar/stellar-sdk', () => ({
@@ -19,11 +28,10 @@ describe('StellarClient', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Mock environment variables
-    process.env.STELLAR_NETWORK = 'testnet';
-    process.env.STELLAR_HORIZON_URL = 'https://horizon-testnet.stellar.org';
-    process.env.STELLAR_SERVER_SECRET_KEY =
-      'SBFB5VXFZLMG5BQ7MFP6G7BQYQ5YQZLKQYQZLKQYQZLKQYQZLKQYQZLK';
+  });
+
+  afterEach(() => {
+    vi.resetModules();
   });
 
   it('should initialize with testnet configuration', () => {
@@ -47,23 +55,42 @@ describe('StellarClient', () => {
   });
 
   describe('getNetworkPassphrase', () => {
-    it('should return mainnet passphrase', () => {
-      process.env.STELLAR_NETWORK = 'mainnet';
-      client = new StellarClient();
+    it('should return mainnet passphrase', async () => {
+      // Re-mock config for mainnet
+      vi.resetModules();
+      vi.doMock('../../config/env', () => ({
+        config: {
+          STELLAR_NETWORK: 'mainnet',
+          STELLAR_HORIZON_URL: 'https://horizon.stellar.org',
+          STELLAR_SERVER_SECRET_KEY: undefined,
+        },
+      }));
+
+      const { StellarClient: MainnetClient } = await import('./client');
+      client = new MainnetClient();
 
       expect(client.getNetworkPassphrase()).toBe('Public Global Stellar Network ; September 2015');
     });
 
     it('should return testnet passphrase', () => {
-      process.env.STELLAR_NETWORK = 'testnet';
       client = new StellarClient();
 
       expect(client.getNetworkPassphrase()).toBe('Test SDF Network ; September 2015');
     });
 
-    it('should return standalone passphrase', () => {
-      process.env.STELLAR_NETWORK = 'standalone';
-      client = new StellarClient();
+    it('should return standalone passphrase', async () => {
+      // Re-mock config for standalone
+      vi.resetModules();
+      vi.doMock('../../config/env', () => ({
+        config: {
+          STELLAR_NETWORK: 'standalone',
+          STELLAR_HORIZON_URL: 'http://localhost:8000',
+          STELLAR_SERVER_SECRET_KEY: undefined,
+        },
+      }));
+
+      const { StellarClient: StandaloneClient } = await import('./client');
+      client = new StandaloneClient();
 
       expect(client.getNetworkPassphrase()).toBe('Standalone Network ; February 2017');
     });
