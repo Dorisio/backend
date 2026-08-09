@@ -16,7 +16,9 @@ vi.mock('../../config/env', () => ({
 vi.mock('@stellar/stellar-sdk', () => ({
   Server: vi.fn(),
   Keypair: {
-    fromSecret: vi.fn(),
+    fromSecret: vi.fn(() => ({
+      publicKey: () => 'GBBD47AB2EB00E041B61C1B7AD184E687E24658D52EDFFDD118F5E6221D60EFF',
+    })),
   },
   Networks: {
     PUBLIC_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
