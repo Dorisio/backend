@@ -7,6 +7,8 @@ vi.mock('../../config/env', () => ({
     STELLAR_NETWORK: 'testnet',
     STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
     STELLAR_SERVER_SECRET_KEY: 'SBFB5VXFZLMG5BQ7MFP6G7BQYQ5YQZLKQYQZLKQYQZLKQYQZLKQYQZLK',
+    NODE_ENV: 'test',
+    LOG_LEVEL: 'error',
   },
 }));
 
@@ -63,6 +65,8 @@ describe('StellarClient', () => {
           STELLAR_NETWORK: 'mainnet',
           STELLAR_HORIZON_URL: 'https://horizon.stellar.org',
           STELLAR_SERVER_SECRET_KEY: undefined,
+          NODE_ENV: 'test',
+          LOG_LEVEL: 'error',
         },
       }));
 
@@ -86,6 +90,8 @@ describe('StellarClient', () => {
           STELLAR_NETWORK: 'standalone',
           STELLAR_HORIZON_URL: 'http://localhost:8000',
           STELLAR_SERVER_SECRET_KEY: undefined,
+          NODE_ENV: 'test',
+          LOG_LEVEL: 'error',
         },
       }));
 
