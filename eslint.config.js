@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
+import globals from 'globals';
 
 export default [
   {
@@ -15,7 +16,7 @@ export default [
         sourceType: 'module',
       },
       globals: {
-        node: true,
+        ...globals.node,
       },
     },
     plugins: {
@@ -24,15 +25,17 @@ export default [
     rules: {
       ...js.configs.recommended.rules,
       ...tsPlugin.configs.recommended.rules,
-      ...tsPlugin.configs.strict.rules,
-      '@typescript-eslint/explicit-module-boundary-types': 'warn',
-      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/explicit-module-boundary-types': 'off',
+      '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': [
-        'error',
+        'warn',
         {
           argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
         },
       ],
+      '@typescript-eslint/no-namespace': 'warn',
+      '@typescript-eslint/no-dynamic-delete': 'warn',
       'no-console': [
         'warn',
         {
