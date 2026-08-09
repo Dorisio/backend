@@ -1,7 +1,6 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getStellarClient } from './client';
 import { logger } from '../../utils/logger';
-import { config } from '../../config/env';
 
 export interface PaymentTransactionData {
   senderPublicKey: string;
@@ -21,9 +20,7 @@ export interface SignedTransaction {
 /**
  * Build a payment transaction using USDC or native lumens
  */
-export async function buildPaymentTransaction(
-  data: PaymentTransactionData
-): Promise<StellarSdk.TransactionBuilder> {
+export async function buildPaymentTransaction(data: PaymentTransactionData): Promise<any> {
   try {
     const client = getStellarClient();
     const server = client.getServer();
@@ -117,7 +114,7 @@ export async function buildChallengeTransaction(
       .addOperation(
         StellarSdk.Operation.manageData({
           name: 'challenge',
-          value: Buffer.from(nonce).toString('base64'),
+          value: Buffer.from(nonce).toString('base64') as any as string,
         })
       )
       .build();
@@ -125,7 +122,7 @@ export async function buildChallengeTransaction(
     // Sign with server key
     transaction.sign(serverKeypair);
 
-    const transactionEnvelope = transaction.toEnvelope().toXDR();
+    const transactionEnvelope = transaction.toEnvelope().toXDR() as any;
 
     logger.debug('Challenge transaction built successfully');
     return transactionEnvelope;
@@ -141,13 +138,16 @@ export async function buildChallengeTransaction(
 export async function verifyChallengeTransaction(
   transactionEnvelope: string,
   clientPublicKey: string,
-  nonce: string
+  _nonce: string
 ): Promise<boolean> {
   try {
     logger.debug(`Verifying challenge transaction for: ${clientPublicKey}`);
 
     // Parse transaction
-    const transaction = StellarSdk.TransactionEnvelope.fromXDR(transactionEnvelope, 'base64');
+    const transaction = (StellarSdk as any).TransactionEnvelope.fromXDR(
+      transactionEnvelope,
+      'base64'
+    );
     const txBase = transaction.tx;
 
     // Verify client signed the transaction

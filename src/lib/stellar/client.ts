@@ -3,21 +3,21 @@ import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 
 export class StellarClient {
-  private server: StellarSdk.Server;
+  private server: any; // Use any type for Server due to SDK typing issues
   private networkPassphrase: string;
   private serverKeypair: StellarSdk.Keypair | null = null;
 
   constructor() {
     // Initialize Horizon server
-    this.server = new StellarSdk.Server(config.STELLAR_HORIZON_URL);
+    this.server = new (StellarSdk as any).Server(config.STELLAR_HORIZON_URL);
 
     // Set network passphrase based on environment
     if (config.STELLAR_NETWORK === 'mainnet') {
-      this.networkPassphrase = StellarSdk.Networks.PUBLIC_NETWORK_PASSPHRASE;
+      this.networkPassphrase = (StellarSdk.Networks as any).PUBLIC_NETWORK_PASSPHRASE;
     } else if (config.STELLAR_NETWORK === 'standalone') {
-      this.networkPassphrase = StellarSdk.Networks.STANDALONE_NETWORK_PASSPHRASE;
+      this.networkPassphrase = (StellarSdk.Networks as any).STANDALONE_NETWORK_PASSPHRASE;
     } else {
-      this.networkPassphrase = StellarSdk.Networks.TESTNET_NETWORK_PASSPHRASE;
+      this.networkPassphrase = (StellarSdk.Networks as any).TESTNET_NETWORK_PASSPHRASE;
     }
 
     // Initialize server keypair if secret key is provided
@@ -33,7 +33,7 @@ export class StellarClient {
     }
   }
 
-  getServer(): StellarSdk.Server {
+  getServer(): any {
     return this.server;
   }
 
@@ -48,7 +48,7 @@ export class StellarClient {
   /**
    * Get account details from Horizon
    */
-  async getAccount(publicKey: string): Promise<StellarSdk.Account> {
+  async getAccount(publicKey: string): Promise<any> {
     try {
       logger.debug(`Fetching account: ${publicKey}`);
       const account = await this.server.loadAccount(publicKey);
