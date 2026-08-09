@@ -25,7 +25,7 @@ export default [
       ...js.configs.recommended.rules,
       ...tsPlugin.configs.recommended.rules,
       ...tsPlugin.configs.strict.rules,
-      '@typescript-eslint/explicit-function-return-types': 'warn',
+      '@typescript-eslint/explicit-module-boundary-types': 'warn',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': [
         'error',
