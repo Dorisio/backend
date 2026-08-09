@@ -100,7 +100,7 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/tipforge_test
 
       - name: Run tests
-        run: pnpm test --exclude='src/__tests__/**'
+        run: pnpm test -- --exclude='src/__tests__/**'
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/tipforge_test
           NODE_ENV: test
