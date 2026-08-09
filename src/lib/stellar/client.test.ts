@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { StellarClient } from './client';
-import * as StellarSdk from '@stellar/stellar-sdk';
 
-// Mock Stellar SDK
-vi.mock('stellar-sdk', () => ({
+// Mock Stellar SDK with correct package name
+vi.mock('@stellar/stellar-sdk', () => ({
   Server: vi.fn(),
   Keypair: {
     fromSecret: vi.fn(),

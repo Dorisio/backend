@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateWalletNonce, verifyAndLinkWallet, getUserWallets, unlinkWallet } from './wallet';
-import * as StellarSdk from '@stellar/stellar-sdk';
 
-// Mock Stellar SDK
-vi.mock('stellar-sdk', () => ({
+// Mock Stellar SDK with correct package name
+vi.mock('@stellar/stellar-sdk', () => ({
   StrKey: {
     isValidEd25519PublicKey: vi.fn((key) => key.startsWith('G')),
   },
