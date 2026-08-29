@@ -1,6 +1,6 @@
-# TipForge Backend
+# Dorisio Backend
 
-Core system for TipForge payment infrastructure.
+Core system for Dorisio payment infrastructure.
 
 ## Setup
 

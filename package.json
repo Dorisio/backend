@@ -1,7 +1,7 @@
 {
-  "name": "tipforge-backend",
+  "name": "dorisio-backend",
   "version": "0.1.0",
-  "description": "TipForge backend - Payment orchestration and Stellar integration",
+  "description": "Dorisio backend - Payment orchestration and Stellar integration",
   "type": "module",
   "main": "dist/index.js",
   "packageManager": "pnpm@9.0.0",

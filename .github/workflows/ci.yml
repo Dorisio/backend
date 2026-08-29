@@ -50,7 +50,7 @@ jobs:
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: tipforge_test
+          POSTGRES_DB: dorisio_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -92,17 +92,17 @@ jobs:
       - name: Generate Prisma Client
         run: pnpm prisma:generate
         env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/tipforge_test
+          DATABASE_URL: postgresql://test:test@localhost:5432/dorisio_test
 
       - name: Run migrations
         run: pnpm prisma migrate deploy --skip-generate || true
         env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/tipforge_test
+          DATABASE_URL: postgresql://test:test@localhost:5432/dorisio_test
 
       - name: Run tests
         run: pnpm test -- --exclude='src/__tests__/**'
         env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/tipforge_test
+          DATABASE_URL: postgresql://test:test@localhost:5432/dorisio_test
           NODE_ENV: test
 
   build:

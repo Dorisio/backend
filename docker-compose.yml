@@ -3,24 +3,24 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: tipforge-postgres
+    container_name: dorisio-postgres
     environment:
-      POSTGRES_USER: tipforge
-      POSTGRES_PASSWORD: tipforge_dev_password
-      POSTGRES_DB: tipforge
+      POSTGRES_USER: dorisio
+      POSTGRES_PASSWORD: dorisio_dev_password
+      POSTGRES_DB: dorisio
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U tipforge']
+      test: ['CMD-SHELL', 'pg_isready -U dorisio']
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: tipforge-redis
+    container_name: dorisio-redis
     ports:
       - '6379:6379'
     volumes:
@@ -35,10 +35,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: tipforge-backend
+    container_name: dorisio-backend
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgresql://tipforge:tipforge_dev_password@postgres:5432/tipforge
+      DATABASE_URL: postgresql://dorisio:dorisio_dev_password@postgres:5432/dorisio
       REDIS_URL: redis://redis:6379
       PORT: 3000
       LOG_LEVEL: debug
@@ -60,12 +60,12 @@ services:
       - ./prisma:/app/prisma
     command: pnpm dev
     networks:
-      - tipforge-network
+      - dorisio-network
 
 volumes:
   postgres_data:
   redis_data:
 
 networks:
-  tipforge-network:
+  dorisio-network:
     driver: bridge

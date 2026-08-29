@@ -1,4 +1,4 @@
-# TipForge Backend Setup Guide
+# Dorisio Backend Setup Guide
 
 ## Prerequisites
 
@@ -134,7 +134,7 @@ pnpm start
 ### Build Docker Image
 
 ```bash
-docker build -t tipforge-backend:latest .
+docker build -t Dorisio-backend:latest .
 ```
 
 ### Run Docker Container
@@ -143,7 +143,7 @@ docker build -t tipforge-backend:latest .
 docker run -p 3000:3000 \
   -e DATABASE_URL="postgresql://user:pass@host:5432/db" \
   -e REDIS_URL="redis://host:6379" \
-  tipforge-backend:latest
+  Dorisio-backend:latest
 ```
 
 ## Database Migrations
