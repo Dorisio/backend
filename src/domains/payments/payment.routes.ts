@@ -1,16 +1,26 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { PaymentService } from './payment.service';
-import { CreateTipSchema, UpdateTipStatusSchema } from './payment.types';
+import {
+  CreateTipSchema,
+  UpdateTipStatusSchema,
+  BuildPaymentTransactionSchema,
+  SubmitPaymentTransactionSchema,
+} from './payment.types';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { rateLimitTipCreation } from '../../middleware/rate-limit';
-import { ValidationError, AppError } from '../../utils/errors';
+import { ValidationError, AppError, NotFoundError } from '../../utils/errors';
 
 export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const paymentService = new PaymentService(prisma);
 
-  // POST /api/v1/transactions/tip - Create a new tip
+  /**
+   * POST /api/v1/transactions/tip
+   * Create a new tip (initial step before payment transaction)
+   * Requires: authenticated user with verified wallet
+   * Rate limited: 10 tips per hour
+   */
   app.post<{ Body: any }>(
     '/api/v1/transactions/tip',
     { preHandler: [authMiddleware, rateLimitTipCreation] },
@@ -31,11 +41,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else if (error instanceof Error && error.message.includes('validation')) {
-          reply
-            .code(400)
-            .send(
-              formatError((error as any).message || 'Invalid request body', 'VALIDATION_ERROR')
-            );
+          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
         } else {
           throw error;
         }
@@ -43,7 +49,11 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // GET /api/v1/transactions/:id - Get a specific tip
+  /**
+   * GET /api/v1/transactions/:id
+   * Get a specific tip by ID
+   * Public endpoint (no auth required)
+   */
   app.get<{ Params: { id: string } }>(
     '/api/v1/transactions/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -52,7 +62,9 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         const result = await paymentService.getTip(id);
         reply.send(formatSuccess(result));
       } catch (error) {
-        if (error instanceof AppError) {
+        if (error instanceof NotFoundError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else {
           throw error;
@@ -61,7 +73,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // GET /api/v1/transactions/history - Get user's tip history
+  /**
+   * GET /api/v1/transactions/history
+   * Get user's tip history (tips they sent)
+   * Requires: authenticated user
+   * Supports pagination: page (default 1), pageSize (default 10, max 100)
+   */
   app.get<{ Querystring: { page?: string; pageSize?: string } }>(
     '/api/v1/transactions/history',
     { preHandler: authMiddleware },
@@ -81,6 +98,8 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else {
           throw error;
         }
@@ -88,7 +107,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // GET /api/v1/transactions/creator/:creatorId - Get tips for a creator
+  /**
+   * GET /api/v1/transactions/creator/:creatorId
+   * Get tips received by a creator
+   * Public endpoint (no auth required)
+   * Supports pagination: page (default 1), pageSize (default 10, max 100)
+   */
   app.get<{ Params: { creatorId: string }; Querystring: { page?: string; pageSize?: string } }>(
     '/api/v1/transactions/creator/:creatorId',
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -100,7 +124,9 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         const result = await paymentService.listTips(creatorId, page, pageSize);
         reply.send(formatSuccess(result));
       } catch (error) {
-        if (error instanceof AppError) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else {
           throw error;
@@ -109,7 +135,11 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // PATCH /api/v1/transactions/:id/status - Update tip status
+  /**
+   * PATCH /api/v1/transactions/:id/status
+   * Update tip status (typically used by transaction confirmation service)
+   * Requires: authenticated user (future: admin or service account)
+   */
   app.patch<{ Params: { id: string }; Body: any }>(
     '/api/v1/transactions/:id/status',
     { preHandler: authMiddleware },
@@ -126,11 +156,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else if (error instanceof Error && error.message.includes('validation')) {
-          reply
-            .code(400)
-            .send(
-              formatError((error as any).message || 'Invalid request body', 'VALIDATION_ERROR')
-            );
+          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
         } else {
           throw error;
         }
@@ -138,47 +164,44 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // POST /api/v1/transactions/:id/build - Build Stellar payment transaction
+  /**
+   * POST /api/v1/transactions/:id/build
+   * Build a Stellar payment transaction for frontend signing
+   * Requires: authenticated user
+   * Body: { senderPublicKey, creatorPublicKey, amount, assetCode?, assetIssuer? }
+   */
   app.post<{ Params: { id: string }; Body: any }>(
     '/api/v1/transactions/:id/build',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params;
-        const body = CreateTipSchema.parse(request.body);
         const user = request.user;
 
         if (!user) {
           throw new Error('User not found in request');
         }
 
-        const buildSchema = CreateTipSchema.extend({
-          senderPublicKey: CreateTipSchema.shape.creatorId,
-          creatorPublicKey: CreateTipSchema.shape.creatorId,
-        });
+        const body = BuildPaymentTransactionSchema.parse(request.body);
+        const { senderPublicKey, creatorPublicKey, amount, assetCode, assetIssuer } = body;
 
-        const { senderPublicKey, creatorPublicKey, amount } = request.body;
-
-        const transactionEnvelope = await paymentService.buildPaymentTransaction(
+        const result = await paymentService.buildPaymentTransaction(
           id,
           senderPublicKey,
           creatorPublicKey,
-          amount.toString(),
-          'USDC',
-          process.env.USDC_ISSUER
+          amount,
+          assetCode,
+          assetIssuer || process.env.USDC_ISSUER
         );
 
-        reply.send(
-          formatSuccess({
-            transactionEnvelope,
-            tipId: id,
-          })
-        );
+        reply.code(200).send(formatSuccess(result));
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof Error && error.message.includes('validation')) {
+          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
         } else {
           throw error;
         }
@@ -186,26 +209,36 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // POST /api/v1/transactions/:id/submit - Submit signed Stellar transaction
+  /**
+   * POST /api/v1/transactions/:id/submit
+   * Submit a signed Stellar payment transaction
+   * Requires: authenticated user
+   * Body: { transactionEnvelope: string }
+   */
   app.post<{ Params: { id: string }; Body: any }>(
     '/api/v1/transactions/:id/submit',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { id } = request.params;
-        const { transactionEnvelope } = request.body;
+        const user = request.user;
 
-        if (!transactionEnvelope) {
-          throw new ValidationError('Signed transaction envelope is required');
+        if (!user) {
+          throw new Error('User not found in request');
         }
 
+        const body = SubmitPaymentTransactionSchema.parse(request.body);
+        const { transactionEnvelope } = body;
+
         const result = await paymentService.submitPaymentTransaction(id, transactionEnvelope);
-        reply.send(formatSuccess(result));
+        reply.code(200).send(formatSuccess(result));
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof Error && error.message.includes('validation')) {
+          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
         } else {
           throw error;
         }
@@ -213,7 +246,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     }
   );
 
-  // GET /api/v1/transactions/:id/confirm - Check transaction confirmation
+  /**
+   * GET /api/v1/transactions/:id/confirm
+   * Check transaction confirmation status
+   * Requires: authenticated user
+   * Polls Horizon to check if transaction has been confirmed
+   */
   app.get<{ Params: { id: string } }>(
     '/api/v1/transactions/:id/confirm',
     { preHandler: authMiddleware },
