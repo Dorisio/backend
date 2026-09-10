@@ -114,7 +114,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
     '/api/v1/wallet/challenge/:nonce',
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { nonce } = request.params;
+        const { nonce } = request.params as { nonce: string };
 
         logger.debug(`Retrieving challenge transaction for nonce: ${nonce.substring(0, 8)}...`);
 
@@ -151,10 +151,12 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
    * Body: { publicKey: string, nonce: string, signedTransaction: string }
    * Returns: { id: string, publicKey: string, verified: boolean }
    */
-  app.post<{ Body: VerifyWalletRequest }>(
+  app.post<{
+    Body: VerifyWalletRequest;
+  }>(
     '/api/v1/wallet/verify',
     { preHandler: authMiddleware },
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Body: VerifyWalletRequest }>, reply: FastifyReply) => {
       try {
         const user = request.user;
         if (!user) {
@@ -216,7 +218,8 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
         logger.debug(`Fetching wallets for user: ${user.userId}`);
 
         const wallets = await getUserWallets(prisma, user.userId);
-        const includeBalance = request.query.includeBalance === 'true';
+        const includeBalance =
+          (request.query as { includeBalance?: string }).includeBalance === 'true';
 
         let walletsWithBalance = wallets;
 
@@ -279,7 +282,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
           throw new UnauthorizedError('User not found');
         }
 
-        const { walletId } = request.params;
+        const { walletId } = request.params as { walletId: string };
 
         logger.debug(`Unlinking wallet: ${walletId} for user: ${user.userId}`);
 
@@ -325,7 +328,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
           throw new UnauthorizedError('User not found');
         }
 
-        const { walletId } = request.params;
+        const { walletId } = request.params as { walletId: string };
         const body = UpdateWalletNameSchema.parse(request.body);
 
         logger.debug(`Updating wallet name: ${walletId} to "${body.name}"`);
@@ -375,7 +378,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
           throw new UnauthorizedError('User not found');
         }
 
-        const { walletId } = request.params;
+        const { walletId } = request.params as { walletId: string };
 
         // Verify wallet belongs to user
         const wallet = await prisma.wallet.findUnique({

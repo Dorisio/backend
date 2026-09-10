@@ -135,8 +135,9 @@ export const registerUserRoutes = (app: FastifyInstance, prisma: PrismaClient): 
           throw new Error('User not found in request');
         }
 
-        const page = request.query.page ? parseInt(request.query.page) : 1;
-        const pageSize = request.query.pageSize ? parseInt(request.query.pageSize) : 10;
+        const query = request.query as { page?: string; pageSize?: string };
+        const page = query.page ? parseInt(query.page) : 1;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
 
         const result = await userService.getUserTransactionHistory(user.userId, page, pageSize);
         reply.send(formatSuccess(result));

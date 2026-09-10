@@ -54,15 +54,13 @@ export async function buildPaymentTransaction(data: PaymentTransactionData): Pro
       senderAccount = await server.loadAccount(data.senderPublicKey);
     } catch (error: any) {
       if (error.status === 404) {
-        throw new Error(
-          `Sender account does not exist on ${client.getNetworkType()} network`
-        );
+        throw new Error(`Sender account does not exist on ${client.getNetworkType()} network`);
       }
       throw error;
     }
 
     // Build transaction
-    let builder = new StellarSdk.TransactionBuilder(senderAccount, {
+    let builder = new StellarSdk.TransactionBuilder(senderAccount as any, {
       fee: StellarSdk.BASE_FEE, // 100 stroops
       networkPassphrase: networkPassphrase,
       timebounds: {
@@ -114,9 +112,7 @@ export async function buildPaymentTransaction(data: PaymentTransactionData): Pro
 
     const transaction = builder.build();
 
-    logger.info(
-      `Payment transaction built successfully for tip: ${data.memo || 'no-memo'}`
-    );
+    logger.info(`Payment transaction built successfully for tip: ${data.memo || 'no-memo'}`);
     return transaction;
   } catch (error) {
     logger.error('Failed to build payment transaction:', error);
@@ -157,7 +153,7 @@ export async function buildChallengeTransaction(
     const serverAccount = await server.loadAccount(serverKeypair.publicKey());
 
     // Build challenge transaction
-    const transaction = new StellarSdk.TransactionBuilder(serverAccount, {
+    const transaction = new StellarSdk.TransactionBuilder(serverAccount as any, {
       fee: StellarSdk.BASE_FEE,
       networkPassphrase: networkPassphrase,
       timebounds: {
@@ -211,10 +207,7 @@ export async function verifyChallengeTransaction(
     // Parse transaction envelope
     let transaction;
     try {
-      transaction = (StellarSdk as any).TransactionEnvelope.fromXDR(
-        transactionEnvelope,
-        'base64'
-      );
+      transaction = (StellarSdk as any).TransactionEnvelope.fromXDR(transactionEnvelope, 'base64');
     } catch (error) {
       logger.warn('Failed to parse transaction XDR');
       return false;
@@ -361,10 +354,13 @@ export async function streamAccountPayments(
 
     logger.debug(`Starting payment stream for account: ${publicKey}`);
 
-    const closeStream = await server.payments().forAccount(publicKey).stream({
-      onmessage: onPayment,
-      onerror: onError || ((error: any) => logger.error('Payment stream error:', error)),
-    });
+    const closeStream = await server
+      .payments()
+      .forAccount(publicKey)
+      .stream({
+        onmessage: onPayment,
+        onerror: onError || ((error: any) => logger.error('Payment stream error:', error)),
+      });
 
     return closeStream;
   } catch (error) {

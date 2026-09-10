@@ -2,11 +2,12 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { verifyToken } from '../utils/jwt';
 import { UnauthorizedError } from '../utils/errors';
 
-declare global {
-  module 'fastify' {
-    interface FastifyRequest {
-      user?: { userId: string; email: string; role: string };
-    }
+declare module 'fastify' {
+  interface FastifyInstance {
+    user?: { userId: string; email: string; role: string };
+  }
+  interface FastifyRequest {
+    user?: { userId: string; email: string; role: string };
   }
 }
 

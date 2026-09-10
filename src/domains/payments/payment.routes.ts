@@ -6,6 +6,8 @@ import {
   UpdateTipStatusSchema,
   BuildPaymentTransactionSchema,
   SubmitPaymentTransactionSchema,
+  UpdateTipStatusRequest,
+  BuildPaymentTransactionRequest,
 } from './payment.types';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
@@ -58,7 +60,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     '/api/v1/transactions/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { id } = request.params;
+        const { id } = request.params as { id: string };
         const result = await paymentService.getTip(id);
         reply.send(formatSuccess(result));
       } catch (error) {
@@ -90,8 +92,9 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
           throw new Error('User not found in request');
         }
 
-        const page = request.query.page ? parseInt(request.query.page) : 1;
-        const pageSize = request.query.pageSize ? parseInt(request.query.pageSize) : 10;
+        const query = request.query as { page?: string; pageSize?: string };
+        const page = query.page ? parseInt(query.page) : 1;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
 
         const result = await paymentService.getUserTipHistory(user.userId, page, pageSize);
         reply.send(formatSuccess(result));
@@ -117,9 +120,10 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     '/api/v1/transactions/creator/:creatorId',
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { creatorId } = request.params;
-        const page = request.query.page ? parseInt(request.query.page) : 1;
-        const pageSize = request.query.pageSize ? parseInt(request.query.pageSize) : 10;
+        const { creatorId } = request.params as { creatorId: string };
+        const query = request.query as { page?: string; pageSize?: string };
+        const page = query.page ? parseInt(query.page) : 1;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
 
         const result = await paymentService.listTips(creatorId, page, pageSize);
         reply.send(formatSuccess(result));
@@ -140,12 +144,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Update tip status (typically used by transaction confirmation service)
    * Requires: authenticated user (future: admin or service account)
    */
-  app.patch<{ Params: { id: string }; Body: any }>(
+  app.patch<{ Params: { id: string }; Body: UpdateTipStatusRequest }>(
     '/api/v1/transactions/:id/status',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { id } = request.params;
+        const { id } = request.params as { id: string };
         const body = UpdateTipStatusSchema.parse(request.body);
 
         const result = await paymentService.updateTipStatus(id, body);
@@ -170,12 +174,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Requires: authenticated user
    * Body: { senderPublicKey, creatorPublicKey, amount, assetCode?, assetIssuer? }
    */
-  app.post<{ Params: { id: string }; Body: any }>(
+  app.post<{ Params: { id: string }; Body: BuildPaymentTransactionRequest }>(
     '/api/v1/transactions/:id/build',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { id } = request.params;
+        const { id } = request.params as { id: string };
         const user = request.user;
 
         if (!user) {
@@ -220,7 +224,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { id } = request.params;
+        const { id } = request.params as { id: string };
         const user = request.user;
 
         if (!user) {
@@ -257,7 +261,7 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const { id } = request.params;
+        const { id } = request.params as { id: string };
         const result = await paymentService.checkTransactionConfirmation(id);
         reply.send(formatSuccess(result));
       } catch (error) {
