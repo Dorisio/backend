@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { generateWalletNonce, verifyAndLinkWallet, getUserWallets, unlinkWallet } from './wallet';
+import { generateWalletNonce, getUserWallets, unlinkWallet } from './wallet';
 
 // Mock Stellar SDK with correct package name
 vi.mock('@stellar/stellar-sdk', () => ({
@@ -61,7 +61,14 @@ describe('Wallet Service', () => {
       expect(wallets[0].id).toBe('wallet-1');
       expect(mockPrisma.wallet.findMany).toHaveBeenCalledWith({
         where: { userId, verified: true },
-        select: expect.any(Object),
+        select: {
+          id: true,
+          publicKey: true,
+          name: true,
+          verified: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
       });
     });
 

@@ -1,7 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { getStellarClient } from './client';
 import { logger } from '../../utils/logger';
-import { config } from '../../config/env';
 
 export interface TransactionListener {
   tipId: string;
@@ -52,17 +51,12 @@ export async function pollForTransactionConfirmation(
       } catch (error: any) {
         if (error.status !== 404) {
           // 404 is expected while transaction is pending
-          logger.error(
-            `Unexpected error polling transaction ${transactionHash}:`,
-            error
-          );
+          logger.error(`Unexpected error polling transaction ${transactionHash}:`, error);
           throw error;
         }
 
         // 404 means transaction not yet confirmed, continue polling
-        logger.debug(
-          `Transaction not yet confirmed (attempt ${attempt + 1}/${maxAttempts})`
-        );
+        logger.debug(`Transaction not yet confirmed (attempt ${attempt + 1}/${maxAttempts})`);
       }
 
       // Wait before next poll (except on last attempt)
@@ -167,9 +161,7 @@ export async function updateTipStatusFromTransaction(
           },
         });
 
-        logger.warn(
-          `Tip marked as failed: ${tipId}, reason: ${confirmationResult.error}`
-        );
+        logger.warn(`Tip marked as failed: ${tipId}, reason: ${confirmationResult.error}`);
       }
     }
   } catch (error) {
@@ -293,10 +285,7 @@ export async function streamCreatorPayments(
     logger.info(`Payment stream started for creator: ${creatorPublicKey}`);
     return closeStream;
   } catch (error) {
-    logger.error(
-      `Failed to start payment stream for creator: ${creatorPublicKey}`,
-      error
-    );
+    logger.error(`Failed to start payment stream for creator: ${creatorPublicKey}`, error);
     throw error;
   }
 }
@@ -376,9 +365,7 @@ export async function processPendingTips(prisma: PrismaClient): Promise<number> 
               });
 
               failed++;
-              logger.warn(
-                `Gave up on pending tip after 5 minutes: ${tip.id}`
-              );
+              logger.warn(`Gave up on pending tip after 5 minutes: ${tip.id}`);
             }
           }
         } catch (error) {

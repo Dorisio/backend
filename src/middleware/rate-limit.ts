@@ -39,7 +39,6 @@ export async function rateLimitTipCreation(
 
     // Check limit
     if (rateLimitStore[key].count >= 10) {
-      const resetAt = new Date(rateLimitStore[key].resetAt).toISOString();
       logger.warn(
         `Rate limit exceeded for user ${user.userId}: ${rateLimitStore[key].count}/10 tips`
       );
@@ -71,11 +70,16 @@ export function cleanupRateLimitStore(): void {
   const now = Date.now();
   let cleaned = 0;
 
+  const keysToDelete: string[] = [];
   for (const [key, value] of Object.entries(rateLimitStore)) {
     if (value.resetAt < now) {
-      delete rateLimitStore[key];
-      cleaned++;
+      keysToDelete.push(key);
     }
+  }
+
+  for (const key of keysToDelete) {
+    delete rateLimitStore[key];
+    cleaned++;
   }
 
   if (cleaned > 0) {

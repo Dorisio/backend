@@ -23,3 +23,28 @@ export interface AuthResponse {
     role: string;
   };
 }
+
+/**
+ * Wallet request types
+ */
+export interface GenerateNonceRequest {
+  publicKey: string;
+}
+
+export interface VerifyWalletRequest {
+  publicKey: string;
+  nonce: string;
+  signedTransaction: string;
+}
+
+export interface UpdateWalletNameRequest {
+  name: string;
+}
+
+export interface WalletResponse {
+  id: string;
+  publicKey: string;
+  name: string | null;
+  verified: boolean;
+  createdAt: Date;
+}

@@ -3,6 +3,12 @@ import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
+import type {
+  GenerateNonceRequest,
+  VerifyWalletRequest,
+  UpdateWalletNameRequest,
+  WalletResponse,
+} from './auth.types';
 import {
   generateWalletNonce,
   getWalletChallenge,
@@ -19,26 +25,23 @@ import { logger } from '../../utils/logger';
  * Zod schema for generating wallet nonce
  */
 const GenerateNonceSchema = z.object({
-  publicKey: z
-    .string()
-    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar public key format'),
+  publicKey: z.string().regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar public key format'),
 });
 
 /**
  * Zod schema for verifying wallet with signed challenge
  */
 const VerifyWalletSchema = z.object({
-  publicKey: z
-    .string()
-    .regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar public key format'),
+  publicKey: z.string().regex(/^G[A-Z2-7]{55}$/, 'Invalid Stellar public key format'),
   nonce: z.string().min(32, 'Invalid nonce format'),
   signedTransaction: z.string().min(1, 'Signed transaction is required'),
 });
 
 /**
  * Zod schema for unlinking wallet
+ * Note: Currently unused - the DELETE endpoint uses path params only
  */
-const UnlinkWalletSchema = z.object({
+const _UnlinkWalletSchema = z.object({
   walletId: z.string().cuid('Invalid wallet ID format'),
 });
 
@@ -59,7 +62,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
    * Body: { publicKey: string }
    * Returns: { nonce: string, expiresIn: number (seconds) }
    */
-  app.post<{ Body: any }>(
+  app.post<{ Body: GenerateNonceRequest }>(
     '/api/v1/wallet/nonce',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -127,9 +130,11 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
       } catch (error) {
         if (error instanceof Error) {
           const statusCode = error.message.includes('expired') ? 410 : 400;
-          reply.code(statusCode).send(
-            formatError(error.message, statusCode === 410 ? 'NONCE_EXPIRED' : 'CHALLENGE_ERROR')
-          );
+          reply
+            .code(statusCode)
+            .send(
+              formatError(error.message, statusCode === 410 ? 'NONCE_EXPIRED' : 'CHALLENGE_ERROR')
+            );
         } else {
           throw error;
         }
@@ -146,7 +151,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
    * Body: { publicKey: string, nonce: string, signedTransaction: string }
    * Returns: { id: string, publicKey: string, verified: boolean }
    */
-  app.post<{ Body: any }>(
+  app.post<{ Body: VerifyWalletRequest }>(
     '/api/v1/wallet/verify',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -158,9 +163,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
 
         const body = VerifyWalletSchema.parse(request.body);
 
-        logger.debug(
-          `Verifying wallet: ${body.publicKey} for user: ${user.userId}`
-        );
+        logger.debug(`Verifying wallet: ${body.publicKey} for user: ${user.userId}`);
 
         const result = await verifyAndLinkWallet(
           prisma,
@@ -183,9 +186,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
           reply.code(400).send(formatError(error.message, 'VALIDATION_ERROR'));
         } else if (error instanceof Error) {
           const statusCode = error.message.includes('already linked') ? 409 : 400;
-          reply.code(statusCode).send(
-            formatError(error.message, 'WALLET_VERIFICATION_FAILED')
-          );
+          reply.code(statusCode).send(formatError(error.message, 'WALLET_VERIFICATION_FAILED'));
         } else {
           throw error;
         }
@@ -220,9 +221,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
         let walletsWithBalance = wallets;
 
         if (includeBalance) {
-          logger.debug(
-            `Including balance information for ${wallets.length} wallets`
-          );
+          logger.debug(`Including balance information for ${wallets.length} wallets`);
 
           walletsWithBalance = await Promise.all(
             wallets.map(async (wallet) => {
@@ -233,10 +232,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
                   balance,
                 };
               } catch (error) {
-                logger.warn(
-                  `Failed to fetch balance for wallet ${wallet.publicKey}:`,
-                  error
-                );
+                logger.warn(`Failed to fetch balance for wallet ${wallet.publicKey}:`, error);
                 return {
                   ...wallet,
                   balance: { lumens: '0', error: 'Failed to fetch balance' },
@@ -285,9 +281,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
 
         const { walletId } = request.params;
 
-        logger.debug(
-          `Unlinking wallet: ${walletId} for user: ${user.userId}`
-        );
+        logger.debug(`Unlinking wallet: ${walletId} for user: ${user.userId}`);
 
         await unlinkWallet(prisma, user.userId, walletId);
 
@@ -321,7 +315,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
    * Body: { name: string }
    * Returns: { id: string, publicKey: string, name: string }
    */
-  app.patch<{ Params: { walletId: string }; Body: any }>(
+  app.patch<{ Params: { walletId: string }; Body: UpdateWalletNameRequest }>(
     '/api/v1/wallet/:walletId/name',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -334,16 +328,9 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
         const { walletId } = request.params;
         const body = UpdateWalletNameSchema.parse(request.body);
 
-        logger.debug(
-          `Updating wallet name: ${walletId} to "${body.name}"`
-        );
+        logger.debug(`Updating wallet name: ${walletId} to "${body.name}"`);
 
-        const result = await updateWalletName(
-          prisma,
-          user.userId,
-          walletId,
-          body.name
-        );
+        const result = await updateWalletName(prisma, user.userId, walletId, body.name);
 
         reply.send(
           formatSuccess({

@@ -3,7 +3,7 @@ import { verifyToken } from '../utils/jwt';
 import { UnauthorizedError } from '../utils/errors';
 
 declare global {
-  namespace FastifyRequest {
+  module 'fastify' {
     interface FastifyRequest {
       user?: { userId: string; email: string; role: string };
     }
@@ -12,7 +12,7 @@ declare global {
 
 export const authMiddleware = async (
   request: FastifyRequest,
-  reply: FastifyReply
+  _reply: FastifyReply
 ): Promise<void> => {
   try {
     const authHeader = request.headers.authorization;

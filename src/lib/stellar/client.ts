@@ -1,6 +1,13 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import type {
+  HorizonServer,
+  StellarAccount,
+  TransactionResponse,
+  AccountBalance,
+  NetworkStatus,
+} from './types';
 
 /**
  * Stellar Client for interacting with the Stellar network
@@ -11,7 +18,7 @@ import { logger } from '../../utils/logger';
  * - Payment streaming
  */
 export class StellarClient {
-  private server: any; // Use any type for Server due to SDK typing issues
+  private server: HorizonServer;
   private networkPassphrase: string;
   private serverKeypair: StellarSdk.Keypair | null = null;
   private networkType: 'testnet' | 'mainnet' | 'standalone';
@@ -23,7 +30,7 @@ export class StellarClient {
     this.server = this.initializeServer();
 
     // Set network passphrase
-    this.networkPassphrase = this.getNetworkPassphrase();
+    this.networkPassphrase = this.resolveNetworkPassphrase();
 
     // Initialize server keypair if secret key is provided
     this.serverKeypair = this.initializeServerKeypair();
@@ -36,7 +43,7 @@ export class StellarClient {
   /**
    * Initialize Horizon server for the specified network
    */
-  private initializeServer(): any {
+  private initializeServer(): HorizonServer {
     const horizonUrl = config.STELLAR_HORIZON_URL;
 
     try {
@@ -55,7 +62,7 @@ export class StellarClient {
   /**
    * Get network passphrase based on STELLAR_NETWORK config
    */
-  private getNetworkPassphrase(): string {
+  private resolveNetworkPassphrase(): string {
     const passphrases: Record<string, string> = {
       testnet: (StellarSdk.Networks as any).TESTNET_NETWORK_PASSPHRASE,
       mainnet: (StellarSdk.Networks as any).PUBLIC_NETWORK_PASSPHRASE,
@@ -94,7 +101,7 @@ export class StellarClient {
   /**
    * Get the Horizon server instance
    */
-  getServer(): any {
+  getServer(): HorizonServer {
     return this.server;
   }
 
@@ -200,10 +207,13 @@ export class StellarClient {
   ): Promise<() => void> {
     try {
       logger.debug(`Starting transaction stream for account: ${publicKey}`);
-      const closeStream = await this.server.transactions().forAccount(publicKey).stream({
-        onmessage: onMessage,
-        onerror: onError || ((error: any) => logger.error('Transaction stream error:', error)),
-      });
+      const closeStream = await this.server
+        .transactions()
+        .forAccount(publicKey)
+        .stream({
+          onmessage: onMessage,
+          onerror: onError || ((error: any) => logger.error('Transaction stream error:', error)),
+        });
 
       return closeStream;
     } catch (error) {
@@ -221,9 +231,7 @@ export class StellarClient {
     order: 'asc' | 'desc' = 'desc'
   ): Promise<any[]> {
     try {
-      logger.debug(
-        `Fetching ${limit} transactions for account (${order}): ${publicKey}`
-      );
+      logger.debug(`Fetching ${limit} transactions for account (${order}): ${publicKey}`);
       const transactions = await this.server
         .transactions()
         .forAccount(publicKey)
@@ -273,13 +281,13 @@ export class StellarClient {
       return result;
     } catch (error: any) {
       logger.error('Failed to submit transaction:', error);
-      
+
       // Provide more helpful error message for common cases
       if (error.response?.data?.extras?.result_codes) {
         const resultCodes = error.response.data.extras.result_codes;
         logger.error('Transaction result codes:', resultCodes);
       }
-      
+
       throw error;
     }
   }

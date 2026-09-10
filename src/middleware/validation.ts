@@ -4,7 +4,7 @@ import { ValidationError } from '../utils/errors';
 
 export const createValidationMiddleware =
   (schema: ZodSchema) =>
-  async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+  async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
     try {
       schema.parse(request.body);
     } catch (error: unknown) {

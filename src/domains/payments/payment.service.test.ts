@@ -8,6 +8,9 @@ const mockPrisma = {
     findUnique: vi.fn(),
     update: vi.fn(),
   },
+  user: {
+    findUnique: vi.fn(),
+  },
   wallet: {
     findFirst: vi.fn(),
   },
@@ -33,9 +36,14 @@ describe('PaymentService', () => {
       const userId = 'user-123';
       const creatorId = 'creator-123';
 
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: userId,
+      });
+
       mockPrisma.creator.findUnique.mockResolvedValue({
         id: creatorId,
         isPublic: true,
+        verified: true,
       });
 
       mockPrisma.wallet.findFirst.mockResolvedValue({

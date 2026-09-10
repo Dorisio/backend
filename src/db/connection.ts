@@ -1,4 +1,4 @@
-import { Pool, Client } from 'pg';
+import { Pool } from 'pg';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 

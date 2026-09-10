@@ -35,7 +35,10 @@ export class AuthService extends BaseService {
     });
   }
 
-  async login(data: LoginRequest): Promise<{ user: any; token: string }> {
+  async login(data: LoginRequest): Promise<{
+    user: { id: string; email: string; name: string | null; role: string };
+    token: string;
+  }> {
     return this.executeWithLogging('user.login', async () => {
       const user = await this.prisma.user.findUnique({
         where: { email: data.email },
@@ -63,7 +66,9 @@ export class AuthService extends BaseService {
     });
   }
 
-  async getByEmail(email: string): Promise<any> {
+  async getByEmail(
+    email: string
+  ): Promise<{ id: string; email: string; name: string | null; role: string; verified: boolean }> {
     return this.executeWithLogging('user.getByEmail', async () => {
       const user = await this.prisma.user.findUnique({
         where: { email },
@@ -73,7 +78,13 @@ export class AuthService extends BaseService {
         throw new ValidationError('User not found');
       }
 
-      return user;
+      return {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        verified: user.verified,
+      };
     });
   }
 }

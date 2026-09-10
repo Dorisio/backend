@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
-import { CreatorPayoutRequest, PayoutHistoryResponse } from './creator.types';
+import type { CreatorPayoutRequest } from './creator.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
