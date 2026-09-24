@@ -31,6 +31,20 @@ const EnvSchema = z.object({
   JWT_SECRET: z.string().default('your-secret-key-change-in-production'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  // Error tracking (Sentry compatible)
+  SENTRY_DSN: z.string().optional(),
+  ERROR_TRACKING_ENABLED: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
+  ERROR_TRACKING_SAMPLE_RATE: z
+    .string()
+    .transform(Number)
+    .refine((val) => !Number.isNaN(val) && val >= 0 && val <= 1, {
+      message: 'ERROR_TRACKING_SAMPLE_RATE must be between 0 and 1',
+    })
+    .default('1'),
+  ERROR_TRACKING_TIMEOUT_MS: z.string().transform(Number).default('5000'),
   STELLAR_NETWORK: z.enum(['testnet', 'mainnet', 'standalone']).default('testnet'),
   STELLAR_HORIZON_URL: z.string().default('https://horizon-testnet.stellar.org'),
   STELLAR_SERVER_SECRET_KEY: z.string().optional(),

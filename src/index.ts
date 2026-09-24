@@ -1,9 +1,12 @@
-import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
+import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
 import { applyJsonSerializer } from './config/serialization';
-import { AppError } from './utils/errors';
+import { swaggerConfig } from './config/swagger';
+import { globalErrorHandler, notFoundHandler } from './middleware/error-handler';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
@@ -40,6 +43,12 @@ app.register(cors, {
 app.register(cookie, {
   secret: config.JWT_SECRET,
 });
+
+// OpenAPI documentation is generated from the registered route schemas and is
+// served at /docs, giving clients a single place to discover endpoints and the
+// standardized error contract.
+app.register(swagger, { openapi: swaggerConfig.openapi });
+app.register(swaggerUi, swaggerConfig.uiConfig);
 
 // Register routes
 registerAuthRoutes(app, prisma);
@@ -99,22 +108,11 @@ app.get('/health', async (_request, _reply) => {
   return checks;
 });
 
-// Error handler
-app.setErrorHandler(async (error, _request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-  if (error instanceof AppError) {
-    reply.code(error.statusCode).send({
-      error: error.message,
-      code: error.code,
-    });
-    return;
-  }
-
-  app.log.error(error);
-  reply.code(500).send({
-    error: 'Internal server error',
-    code: 'INTERNAL_ERROR',
-  });
-});
+// Global error handling: every thrown/validation error is normalized into the
+// standardized error envelope, sanitized, logged with full server-side context
+// and forwarded to the configured error tracker.
+app.setErrorHandler(globalErrorHandler);
+app.setNotFoundHandler(notFoundHandler);
 
 // Service becomes "ready" only once Fastify has finished booting (all
 // plugins/routes registered) - readiness stays 503 until this fires, so
