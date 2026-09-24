@@ -188,5 +188,20 @@ const handleShutdown = async (signal: string): Promise<void> => {
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
+// Background workers are opt-in so the API process does not need to compete for
+// Redis connections when a separate worker deployment runs them.
+const startBackgroundWorkers = async (): Promise<void> => {
+  if (!config.JOBS_WORKERS_ENABLED) return;
+  try {
+    const { startConfiguredWorkers } = await import('./lib/jobs');
+    const workers = startConfiguredWorkers({ deps: { prisma } });
+    app.log.info({ workers: workers.length }, 'Background job workers started');
+  } catch (err) {
+    app.log.error({ err }, 'Failed to start background job workers');
+  }
+};
+
+void startBackgroundWorkers();
+
 start();
 

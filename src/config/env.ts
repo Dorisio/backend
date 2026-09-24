@@ -28,6 +28,14 @@ const EnvSchema = z.object({
   REDIS_CONNECTION_TIMEOUT_MS: z.string().transform(Number).default(String(30 * 1000)),
   REDIS_HEALTHCHECK_INTERVAL_MS: z.string().transform(Number).default(String(60 * 1000)),
   CACHE_FALLBACK_MEMORY_SIZE: z.string().transform(Number).default('1000'),
+  // Background job processing
+  JOBS_WORKERS_ENABLED: z
+    .string()
+    .transform((val) => val === 'true')
+    .default('false'),
+  JOBS_CONCURRENCY: z.string().transform(Number).default('5'),
+  JOB_DEFAULT_ATTEMPTS: z.string().transform(Number).default('3'),
+  JOB_BACKOFF_MS: z.string().transform(Number).default('1000'),
   JWT_SECRET: z.string().default('your-secret-key-change-in-production'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
