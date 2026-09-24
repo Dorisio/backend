@@ -14,6 +14,7 @@ model User {
   name      String?
   role      String   @default("fan")
   verified  Boolean  @default(false)
+  notificationPreferences Json @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

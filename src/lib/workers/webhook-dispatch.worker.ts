@@ -38,6 +38,7 @@ export const webhookDispatchWorker = new Worker(
           'X-Dorisio-Signature': `sha256=${signature}`,
           'X-Dorisio-Event': eventType,
           'X-Dorisio-Delivery-Id': job.id,
+          'X-Request-Id': String(job.data.requestId ?? job.id),
         },
         timeout: 30000,
       });

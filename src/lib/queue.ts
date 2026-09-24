@@ -1,4 +1,5 @@
 import { Queue, Worker, QueueEvents } from 'bullmq';
+import IORedis from 'ioredis';
 import { createClient } from 'redis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
@@ -26,6 +27,9 @@ export const stellarConfirmationQueue = new Queue('stellar-confirmation', {
   connection: redis as any,
 });
 export const webhookDispatchQueue = new Queue('webhook-dispatch', { connection: redis as any });
+export const emailNotificationRedis = new IORedis(config.REDIS_URL, { maxRetriesPerRequest: null });
+export const emailNotificationEventsRedis = emailNotificationRedis.duplicate();
+export const emailNotificationQueue = new Queue('email-notifications', { connection: emailNotificationRedis as any });
 
 // Queue event handlers
 export const stellarConfirmationEvents = new QueueEvents('stellar-confirmation', {
@@ -35,6 +39,7 @@ export const stellarConfirmationEvents = new QueueEvents('stellar-confirmation',
 export const webhookDispatchEvents = new QueueEvents('webhook-dispatch', {
   connection: redis as any,
 });
+export const emailNotificationEvents = new QueueEvents('email-notifications', { connection: emailNotificationEventsRedis as any });
 
 // Initialize queue event listeners
 stellarConfirmationEvents.on('completed', ({ jobId }) => {
@@ -53,10 +58,21 @@ webhookDispatchEvents.on('failed', ({ jobId, failedReason }) => {
   logger.error(`Webhook dispatch job ${jobId} failed: ${failedReason}`);
 });
 
+emailNotificationEvents.on('completed', ({ jobId }) => {
+  logger.info({ jobId }, 'Email notification delivered');
+});
+emailNotificationEvents.on('failed', ({ jobId, failedReason }) => {
+  logger.error({ jobId, failedReason }, 'Email notification delivery failed');
+});
+
 export async function closeQueues() {
   await stellarConfirmationQueue.close();
   await webhookDispatchQueue.close();
+  await emailNotificationQueue.close();
   await stellarConfirmationEvents.close();
   await webhookDispatchEvents.close();
+  await emailNotificationEvents.close();
+  await emailNotificationRedis.quit();
+  await emailNotificationEventsRedis.quit();
   await redis.quit();
 }

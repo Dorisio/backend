@@ -37,6 +37,8 @@ const EnvSchema = z.object({
   USDC_CONTRACT_ID: z.string().optional(),
   USDC_ISSUER: z.string().optional(),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
+  SENDGRID_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().email().optional(),
 });
 
 type Environment = z.infer<typeof EnvSchema>;

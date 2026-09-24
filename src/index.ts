@@ -1,6 +1,12 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import cors from '@fastify/cors';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
+import { swaggerConfig } from './config/swagger';
+import { requestDurationHistogram } from './lib/metrics';
+import { runWithRequestId } from './utils/request-context';
 import { AppError } from './utils/errors';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
@@ -12,11 +18,20 @@ import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
+import { registerNotificationRoutes } from './domains/notifications/notification.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
-import redisPool, { startRedisHealthCheck } from './lib/redisPool';
-import cache from './lib/cache';
+import { closeQueues } from './lib/queue';
+import redisPool from './lib/redisPool';
+import { emailNotificationWorker } from './lib/workers/email-notification.worker';
+import { setServiceState } from './services/health.service';
 
 const app = Fastify({
+  genReqId: (request) => {
+    const incoming = request.headers['x-request-id'];
+    return typeof incoming === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming)
+      ? incoming
+      : randomUUID();
+  },
   logger: {
     level: config.LOG_LEVEL,
   },
@@ -26,10 +41,37 @@ const app = Fastify({
 const prisma = new PrismaClient();
 
 // Register plugins
+app.register(swagger, { swagger: swaggerConfig.swagger as any });
+app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list' } });
 app.register(cors, {
   origin: true,
   credentials: true,
 });
+
+app.addHook('onSend', async (request, reply, payload) => {
+  reply.header('x-request-id', request.id);
+  return payload;
+});
+
+const requestStartTimes = new WeakMap<object, number>();
+app.addHook('onRequest', (request, _reply, done) => {
+  requestStartTimes.set(request, performance.now());
+  runWithRequestId(request.id, done);
+});
+app.addHook('onResponse', (request, reply, done) => {
+  const startedAt = requestStartTimes.get(request);
+  if (startedAt !== undefined) {
+    requestDurationHistogram.observe({
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      status: String(reply.statusCode),
+    }, (performance.now() - startedAt) / 1000);
+    requestStartTimes.delete(request);
+  }
+  done();
+});
+
+app.get('/api-spec.json', async () => app.swagger());
 
 // Register routes
 registerAuthRoutes(app, prisma);
@@ -40,6 +82,7 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
+registerNotificationRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint
@@ -128,6 +171,9 @@ const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
 
   try {
     await app.close();
+    await emailNotificationWorker.close();
+    await closeQueues();
+    await closeDatabase();
     await prisma.$disconnect();
     process.exit(0);
   } catch (err) {
@@ -160,23 +206,6 @@ const start = async (): Promise<void> => {
     process.exit(1);
   }
 };
-
-const handleShutdown = async (signal: string): Promise<void> => {
-  app.log.info(`Received ${signal}, starting graceful shutdown...`);
-  try {
-    await app.close();
-    await closeDatabase();
-    await prisma.$disconnect();
-    app.log.info('Graceful shutdown complete');
-    process.exit(0);
-  } catch (err) {
-    app.log.error({ err }, 'Error during shutdown');
-    process.exit(1);
-  }
-};
-
-process.on('SIGINT', () => handleShutdown('SIGINT'));
-process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
 start();
 
