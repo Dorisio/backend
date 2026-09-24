@@ -36,6 +36,12 @@ const EnvSchema = z.object({
   STELLAR_SERVER_SECRET_KEY: z.string().optional(),
   USDC_CONTRACT_ID: z.string().optional(),
   USDC_ISSUER: z.string().optional(),
+  // External payment processing
+  PAYMENTS_PROVIDER: z.enum(['stripe', 'none']).default('none'),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
+  PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
 });
 

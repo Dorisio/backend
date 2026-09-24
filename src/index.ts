@@ -10,6 +10,7 @@ import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics,
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
+import { registerChargeRoutes } from './domains/payments/charge.routes';
 import { registerUserRoutes } from './domains/users/user.routes';
 import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
@@ -50,6 +51,7 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
+registerChargeRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint

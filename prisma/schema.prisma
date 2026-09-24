@@ -20,6 +20,7 @@ model User {
   creator   Creator?
   wallets   Wallet[]
   tips      Tip[]
+  payments  Payment[]
 }
 
 model Creator {
@@ -41,6 +42,7 @@ model Creator {
   tips      Tip[]    @relation("CreatorTips")
   webhooks  Webhook[]
   freezes   AccountFreeze[]
+  payments  Payment[]
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -138,6 +140,78 @@ model WebhookEvent {
   updatedAt DateTime @updatedAt
   
   @@index([webhookId])
+  @@index([status])
+}
+
+// A payment processed by an external provider (Stripe et al). Raw card data is
+// never stored — only provider references and tokenized intent ids.
+model Payment {
+  id             String   @id @default(cuid())
+  idempotencyKey String   @unique
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorId String?
+  creator   Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+
+  provider    String // stripe
+  method      String // card | wallet | crypto
+  providerRef String? // provider payment intent reference
+  amount      Float
+  currency    String  @default("USD")
+  status      String  @default("pending") // pending, requires_action, processing, succeeded, failed, canceled, refunded, partially_refunded, disputed
+  description String?
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events  PaymentEvent[]
+  refunds Refund[]
+
+  @@index([userId, createdAt])
+  @@index([creatorId])
+  @@index([status])
+  @@index([providerRef])
+}
+
+// Immutable audit trail for a payment. Every state change and provider callback
+// appends an event so the full history can be reconstructed.
+model PaymentEvent {
+  id        String  @id @default(cuid())
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  type   String // payment.created, payment.succeeded, payment.failed, refund.created, chargeback.created, webhook.received
+  actor  String? // user id, "system" or "provider"
+  data   Json?
+
+  // Provider event id — unique so webhook redelivery is idempotent.
+  providerEventId String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([type])
+}
+
+model Refund {
+  id             String  @id @default(cuid())
+  paymentId      String
+  payment        Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  idempotencyKey String  @unique
+
+  amount       Float
+  currency     String  @default("USD")
+  reason       String?
+  status       String  @default("pending") // pending, succeeded, failed
+  providerRef  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([paymentId])
   @@index([status])
 }
 
