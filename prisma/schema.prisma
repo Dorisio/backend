@@ -44,6 +44,10 @@ model Creator {
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([verified, isPublic])
+  @@index([totalEarnings(sort: Desc)])
+  @@index([userId])
 }
 
 model Wallet {
@@ -57,6 +61,8 @@ model Wallet {
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId, verified])
 }
 
 model Tip {
@@ -75,6 +81,12 @@ model Tip {
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([creatorId, status, createdAt(sort: Desc)])
+  @@index([fromUserId, createdAt(sort: Desc)])
+  @@index([createdAt, status])
+  @@index([status])
+  @@index([transactionHash])
 }
 
 model BlacklistedToken {
@@ -118,6 +130,7 @@ model WebhookEvent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([webhookId, status, createdAt(sort: Desc)])
   @@index([webhookId])
   @@index([status])
 }
@@ -137,6 +150,8 @@ model WalletFlag {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([resolved, address])
+  @@index([resolved, createdAt(sort: Desc)])
   @@index([resolved])
   @@index([severity])
 }
@@ -158,6 +173,7 @@ model AccountFreeze {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([creatorId, resolved, expiresAt])
   @@index([creatorId])
   @@index([resolved])
   @@index([expiresAt])
