@@ -156,6 +156,16 @@ const start = async (): Promise<void> => {
       }
     }
 
+    // Start Redis health check
+    startRedisHealthCheck();
+
+    // Initialize cache warming (non-blocking)
+    if (config.DATABASE_URL) {
+      initializeCacheWarming(prisma).catch((err) => {
+        app.log.warn({ err }, 'Cache warming failed, continuing startup');
+      });
+    }
+
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
     app.log.info(`Server listening on http://0.0.0.0:${config.PORT}`);
   } catch (err) {

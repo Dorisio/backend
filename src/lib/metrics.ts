@@ -86,6 +86,11 @@ export const cacheSizeGauge = new Gauge({
   help: 'Current in-memory fallback cache size',
 });
 
+export const cacheHitRateGauge = new Gauge({
+  name: 'dorisio_cache_hit_rate',
+  help: 'Cache hit rate (0-1)',
+});
+
 export function registerPoolMetrics(pool: Pool<any>) {
   // Expose pool stats via gauges
   const poolUsed = new Gauge({ name: 'dorisio_redis_pool_used', help: 'Number of used connections' });

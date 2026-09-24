@@ -4,6 +4,8 @@ import { AdminService, FlagWalletRequest, FreezeAccountRequest } from './admin.s
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { ValidationError, AppError, UnauthorizedError } from '../../utils/errors';
+import cache, { getStats, getHitRate, resetStats } from '../../lib/cache/index';
+import { CacheWarmer } from '../../lib/cache/cache-warming';
 
 export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const adminService = new AdminService(prisma);
@@ -228,6 +230,218 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
 
         const result = await adminService.getModerationQueue(page, pageSize);
         reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // GET /api/v1/admin/cache/stats - Get cache statistics
+  app.get(
+    '/api/v1/admin/cache/stats',
+    {
+      preHandler: authMiddleware,
+      schema: {
+        
+        
+
+        
+        response: {
+          200: { description: 'Cache statistics' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const stats = getStats();
+        reply.send(formatSuccess(stats));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/admin/cache/clear - Clear entire cache
+  app.post(
+    '/api/v1/admin/cache/clear',
+    {
+      preHandler: authMiddleware,
+      schema: {
+        
+        
+
+        
+        response: {
+          200: { description: 'Cache cleared' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        await cache.clear();
+        reply.send(formatSuccess({ message: 'Cache cleared successfully' }));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/admin/cache/invalidate - Invalidate specific cache key
+  app.post<{ Body: { key: string } }>(
+    '/api/v1/admin/cache/invalidate',
+    {
+      preHandler: authMiddleware,
+      schema: {
+        
+        
+
+        
+        body: {
+          type: 'object',
+          required: ['key'],
+          properties: {
+            key: { type: 'string', description: 'Cache key to invalidate' },
+          },
+        },
+        response: {
+          200: { description: 'Cache key invalidated' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const { key } = request.body as { key: string };
+        await cache.del(key);
+        reply.send(formatSuccess({ message: `Cache key '${key}' invalidated` }));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/admin/cache/warm - Trigger cache warming
+  app.post<{ Body: { type?: string } }>(
+    '/api/v1/admin/cache/warm',
+    {
+      preHandler: authMiddleware,
+      schema: {
+        
+        
+
+        
+        body: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['creators', 'trending', 'analytics', 'all'], description: 'Type of cache warming' },
+          },
+        },
+        response: {
+          200: { description: 'Cache warming triggered' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const { type = 'all' } = request.body as { type?: string };
+        const warmer = new CacheWarmer(prisma);
+
+        switch (type) {
+          case 'creators':
+            await warmer.warmTopCreators();
+            break;
+          case 'trending':
+            await warmer.warmTrendingData();
+            break;
+          case 'analytics':
+            await warmer.warmAnalyticsData();
+            break;
+          case 'all':
+          default:
+            await warmer.warmAll();
+            break;
+        }
+
+        reply.send(formatSuccess({ message: `Cache warming completed for '${type}'` }));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/admin/cache/reset-stats - Reset cache statistics
+  app.post(
+    '/api/v1/admin/cache/reset-stats',
+    {
+      preHandler: authMiddleware,
+      schema: {
+        
+        
+
+        
+        response: {
+          200: { description: 'Cache statistics reset' },
+          401: { description: 'Unauthorized' },
+          403: { description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        resetStats();
+        reply.send(formatSuccess({ message: 'Cache statistics reset successfully' }));
       } catch (error) {
         if (error instanceof UnauthorizedError) {
           reply.code(403).send(formatError(error.message, error.code));
