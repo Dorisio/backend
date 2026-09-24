@@ -1,7 +1,10 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import { config } from './config/env';
+import { applyJsonSerializer } from './config/serialization';
 import { AppError } from './utils/errors';
+import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
@@ -25,10 +28,17 @@ const app = Fastify({
 // Initialize Prisma
 const prisma = new PrismaClient();
 
+// Response schemas are documentation-only; see config/serialization.ts.
+applyJsonSerializer(app);
+
 // Register plugins
 app.register(cors, {
   origin: true,
   credentials: true,
+});
+
+app.register(cookie, {
+  secret: config.JWT_SECRET,
 });
 
 // Register routes

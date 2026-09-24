@@ -94,11 +94,9 @@ export function registerPoolMetrics(pool: Pool<any>) {
 
   setInterval(() => {
     try {
-      // @ts-ignore generic-pool exposes these properties at runtime
+      // generic-pool exposes these properties at runtime
       poolUsed.set((pool as any).borrowed || (pool as any).pending || 0);
-      // @ts-ignore
       poolWaiting.set((pool as any).pending || 0);
-      // @ts-ignore
       poolSize.set((pool as any).size || 0);
     } catch (e) {
       // ignore

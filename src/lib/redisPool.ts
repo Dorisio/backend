@@ -34,7 +34,7 @@ const opts: genericPool.Options = {
 
 export const redisPool = genericPool.createPool(factory, opts);
 
-let healthTimer: NodeJS.Timer | null = null;
+let healthTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startRedisHealthCheck() {
   if (healthTimer) return;

@@ -5,7 +5,6 @@ describe('Redis Pool', () => {
   it('creates a pool with min and max', async () => {
     expect(redisPool).toBeDefined();
     // pool exposes options
-    // @ts-ignore
     expect(redisPool.min).toBeDefined();
   });
 

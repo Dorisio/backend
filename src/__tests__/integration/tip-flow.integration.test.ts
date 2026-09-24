@@ -13,7 +13,6 @@ let payoutService: PayoutService;
 let testUserId: string;
 let testCreatorId: string;
 let testCreatorUserId: string;
-let isDbAvailable = false;
 
 const isDbAvailable = Boolean(process.env.DATABASE_URL);
 

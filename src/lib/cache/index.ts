@@ -1,11 +1,11 @@
-import LRU from 'lru-cache';
+import { LRUCache } from 'lru-cache';
 import { withRedis } from '../redisPool';
 import { cacheHits, cacheMisses, cacheSizeGauge } from '../metrics';
 import { config } from '../../config';
 
 type CacheOptions = { ttlMs?: number; prefix?: string };
 
-const memoryCache = new LRU<string, any>({
+const memoryCache = new LRUCache<string, any>({
   max: config.CACHE_FALLBACK_MEMORY_SIZE,
   ttl: 1000 * 60 * 60, // default 1h
 });
