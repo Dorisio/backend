@@ -19,6 +19,22 @@ const EnvSchema = z.object({
   DB_LEAK_DETECTION_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   DB_CIRCUIT_BREAKER_FAILURES: z.string().transform(Number).default('5'),
   DB_CIRCUIT_BREAKER_RESET_MS: z.string().transform(Number).default('10000'),
+  // External services circuit breaker (Stellar Horizon, webhooks, etc.)
+  CIRCUIT_BREAKER_FAILURE_THRESHOLD: z.string().transform(Number).default('0.5'),
+  CIRCUIT_BREAKER_SUCCESS_THRESHOLD: z.string().transform(Number).default('2'),
+  CIRCUIT_BREAKER_TIMEOUT_MS: z.string().transform(Number).default('60000'),
+  CIRCUIT_BREAKER_RESET_TIMEOUT_MS: z.string().transform(Number).default('30000'),
+  CIRCUIT_BREAKER_MIN_REQUESTS: z.string().transform(Number).default('5'),
+  CIRCUIT_BREAKER_ROLLING_WINDOW_MS: z.string().transform(Number).default('60000'),
+  CIRCUIT_BREAKER_VOLUME_THRESHOLD: z.string().transform(Number).default('5'),
+  STELLAR_CIRCUIT_BREAKER_ENABLED: z
+    .string()
+    .transform((val) => val === 'true')
+    .default('true'),
+  WEBHOOK_CIRCUIT_BREAKER_ENABLED: z
+    .string()
+    .transform((val) => val === 'true')
+    .default('true'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   REDIS_HOST: z.string().optional(),
   REDIS_PORT: z.string().transform(Number).optional(),
@@ -33,6 +49,7 @@ const EnvSchema = z.object({
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   STELLAR_NETWORK: z.enum(['testnet', 'mainnet', 'standalone']).default('testnet'),
   STELLAR_HORIZON_URL: z.string().default('https://horizon-testnet.stellar.org'),
+  STELLAR_HORIZON_TIMEOUT_MS: z.string().transform(Number).default('60000'),
   STELLAR_SERVER_SECRET_KEY: z.string().optional(),
   USDC_CONTRACT_ID: z.string().optional(),
   USDC_ISSUER: z.string().optional(),
@@ -43,6 +60,17 @@ const EnvSchema = z.object({
   STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
   PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
+  // Issue #28 — CORS
+  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:5173'),
+  CORS_CREDENTIALS: z.string().transform((v) => v !== 'false').default('true'),
+  CORS_MAX_AGE: z.string().transform(Number).default('86400'),
+  // Issue #27 — workers / jobs
+  WORKER_CONCURRENCY: z.string().transform(Number).default('10'),
+  ENABLE_WORKERS: z.string().transform((v) => v === 'true').default('false'),
+  // Issue #30 — GraphQL
+  GRAPHQL_ENABLED: z.string().transform((v) => v !== 'false').default('true'),
+  GRAPHQL_MAX_DEPTH: z.string().transform(Number).default('5'),
+  GRAPHQL_MAX_COMPLEXITY: z.string().transform(Number).default('100'),
 });
 
 type Environment = z.infer<typeof EnvSchema>;
@@ -59,3 +87,10 @@ const validateEnv = (): Environment => {
 };
 
 export const config = validateEnv();
+
+/** Parsed CORS allow-list. Use `*` via CORS_ORIGINS=* for open (dev only). */
+export function getCorsOrigins(): boolean | string[] {
+  const raw = config.CORS_ORIGINS.trim();
+  if (raw === '*') return true;
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}

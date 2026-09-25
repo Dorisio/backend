@@ -1,6 +1,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { executeWithBreaker } from '../circuit-breaker';
 import type {
   HorizonServer,
   StellarAccount,
@@ -127,12 +128,21 @@ export class StellarClient {
   }
 
   /**
+   * Run a Horizon request through the external-service circuit breaker.
+   * All REST-style Horizon interactions funnel through this helper so the
+   * breaker's failure rate reflects the health of the Horizon API itself.
+   */
+  private async withCircuitBreaker(action: () => Promise<any>): Promise<any> {
+    return executeWithBreaker('stellar', action);
+  }
+
+  /**
    * Get account details from Horizon
    */
   async getAccount(publicKey: string): Promise<any> {
     try {
       logger.debug(`Fetching account from Horizon: ${publicKey}`);
-      const account = await this.server.loadAccount(publicKey);
+      const account = await this.withCircuitBreaker(() => this.server.loadAccount(publicKey));
       return account;
     } catch (error: any) {
       if (error.status === 404) {
@@ -150,7 +160,9 @@ export class StellarClient {
   async getAccountBalances(publicKey: string): Promise<any[]> {
     try {
       logger.debug(`Fetching balances for account: ${publicKey}`);
-      const account = await this.server.accounts().accountId(publicKey).call();
+      const account = await this.withCircuitBreaker(() =>
+        this.server.accounts().accountId(publicKey).call()
+      );
       return account.balances;
     } catch (error: any) {
       if (error.status === 404) {
@@ -168,7 +180,7 @@ export class StellarClient {
   async accountExists(publicKey: string): Promise<boolean> {
     try {
       logger.debug(`Checking if account exists: ${publicKey}`);
-      await this.server.loadAccount(publicKey);
+      await this.withCircuitBreaker(() => this.server.loadAccount(publicKey));
       return true;
     } catch (error: any) {
       if (error.status === 404) {
@@ -185,7 +197,9 @@ export class StellarClient {
   async getTransaction(transactionHash: string): Promise<any> {
     try {
       logger.debug(`Fetching transaction: ${transactionHash}`);
-      const transaction = await this.server.transactions().hash(transactionHash).call();
+      const transaction = await this.withCircuitBreaker(() =>
+        this.server.transactions().hash(transactionHash).call()
+      );
       return transaction;
     } catch (error: any) {
       if (error.status === 404) {
@@ -232,12 +246,14 @@ export class StellarClient {
   ): Promise<any[]> {
     try {
       logger.debug(`Fetching ${limit} transactions for account (${order}): ${publicKey}`);
-      const transactions = await this.server
-        .transactions()
-        .forAccount(publicKey)
-        .limit(limit)
-        .order(order)
-        .call();
+      const transactions = await this.withCircuitBreaker(() =>
+        this.server
+          .transactions()
+          .forAccount(publicKey)
+          .limit(limit)
+          .order(order)
+          .call()
+      );
 
       return transactions.records;
     } catch (error) {
@@ -256,12 +272,14 @@ export class StellarClient {
   ): Promise<any[]> {
     try {
       logger.debug(`Fetching ${limit} payments for account (${order}): ${publicKey}`);
-      const payments = await this.server
-        .payments()
-        .forAccount(publicKey)
-        .limit(limit)
-        .order(order)
-        .call();
+      const payments = await this.withCircuitBreaker(() =>
+        this.server
+          .payments()
+          .forAccount(publicKey)
+          .limit(limit)
+          .order(order)
+          .call()
+      );
 
       return payments.records;
     } catch (error) {
@@ -276,7 +294,9 @@ export class StellarClient {
   async submitTransaction(transactionXdr: string): Promise<any> {
     try {
       logger.debug('Submitting transaction to Horizon network');
-      const result = await this.server.submitTransaction(transactionXdr);
+      const result = await this.withCircuitBreaker(() =>
+        this.server.submitTransaction(transactionXdr)
+      );
       logger.info(`Transaction submitted successfully: ${result.id}`);
       return result;
     } catch (error: any) {
@@ -297,7 +317,9 @@ export class StellarClient {
    */
   async getNetworkStatus(): Promise<{ baseFee: number; ledgerVersion: number }> {
     try {
-      const ledger = await this.server.ledgers().order('desc').limit(1).call();
+      const ledger = await this.withCircuitBreaker(() =>
+        this.server.ledgers().order('desc').limit(1).call()
+      );
       return {
         baseFee: ledger.records[0]?.base_fees_in_stroops || 100,
         ledgerVersion: ledger.records[0]?.sequence || 0,

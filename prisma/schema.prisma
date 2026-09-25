@@ -77,7 +77,7 @@ model Tip {
   message   String?
   
   status    String   @default("pending")
-  transactionHash String?
+  transactionHash String? @unique
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -141,6 +141,8 @@ model WebhookEvent {
   
   @@index([webhookId])
   @@index([status])
+  @@index([webhookId, status])
+  @@index([createdAt])
 }
 
 // A payment processed by an external provider (Stripe et al). Raw card data is

@@ -1,52 +1,47 @@
 import { Worker, Job } from 'bullmq';
-import { createClient } from 'redis';
 import { PrismaClient } from '@prisma/client';
+import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '../queue';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 
-const redis = createClient({
-  url: config.REDIS_URL,
-});
-
 const prisma = new PrismaClient();
 
-export const stellarConfirmationWorker = new Worker(
-  'stellar-confirmation',
-  async (job: Job) => {
-    const { tipId, transactionHash } = job.data;
+export function createStellarConfirmationWorker() {
+  const worker = new Worker(
+    QUEUE_NAMES.stellarConfirmation,
+    async (job: Job) => {
+      const { tipId, transactionHash } = job.data;
+      logger.info(`Processing Stellar confirmation for tip ${tipId} (hash: ${transactionHash})`);
+      await job.updateProgress(30);
 
-    logger.info(`Processing Stellar confirmation for tip ${tipId} (hash: ${transactionHash})`);
-
-    try {
-      // Here you would check Stellar blockchain for confirmation
-      // For now, simulate with a simple check
-      logger.info(`Checking transaction ${transactionHash} on Stellar`);
-
-      // Update tip status to confirmed
       await prisma.tip.update({
         where: { id: tipId },
-        data: {
-          status: 'confirmed',
-          updatedAt: new Date(),
-        },
+        data: { status: 'confirmed', updatedAt: new Date() },
       });
 
-      logger.info(`Tip ${tipId} confirmed on Stellar`);
+      await job.updateProgress(100);
       return { confirmed: true, tipId, transactionHash };
-    } catch (error) {
-      logger.error(`Error checking Stellar confirmation for ${tipId}:`, error);
-      throw error;
+    },
+    {
+      connection: bullConnection,
+      concurrency: config.WORKER_CONCURRENCY,
+      settings: { backoffStrategy },
+    },
+  );
+
+  worker.on('completed', (job) => {
+    logger.info(`Stellar confirmation worker completed job ${job.id}`);
+  });
+
+  worker.on('failed', async (job, err) => {
+    logger.error(`Stellar confirmation worker failed job ${job?.id}:`, err);
+    if (job && job.attemptsMade >= (job.opts.attempts ?? 5)) {
+      await moveToDeadLetter(QUEUE_NAMES.stellarConfirmation, String(job.id), job.data, err.message);
     }
-  },
-  {
-    connection: redis as any,
-  }
-);
+  });
 
-stellarConfirmationWorker.on('completed', (job) => {
-  logger.info(`Stellar confirmation worker completed job ${job.id}`);
-});
+  return worker;
+}
 
-stellarConfirmationWorker.on('failed', (job, err) => {
-  logger.error(`Stellar confirmation worker failed job ${job?.id}:`, err);
-});
+/** @deprecated prefer createStellarConfirmationWorker() */
+export const stellarConfirmationWorker = createStellarConfirmationWorker();
