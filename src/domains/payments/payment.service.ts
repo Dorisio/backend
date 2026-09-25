@@ -559,10 +559,12 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.updateTipStatus', async () => {
       const maxRetries = 3;
       let attempt = 0;
+      let shouldDispatchWebhook = false;
+      let finalTip: TipResponse;
 
       while (true) {
         try {
-          return await this.prisma.$transaction(async (tx) => {
+          finalTip = await this.prisma.$transaction(async (tx) => {
             const tip = await tx.tip.findUnique({ where: { id: tipId } });
             if (!tip) throw new NotFoundError('Tip');
 
@@ -593,10 +595,14 @@ export class PaymentService extends BaseService {
                 },
               });
               logger.info(`Tip completed and creator earnings updated: ${tipId}, amount: ${tip.amount}`);
+              shouldDispatchWebhook = true;
+            } else {
+              shouldDispatchWebhook = false; // Reset in case of retry
             }
 
             return this.formatTipResponse({ ...tip, status: data.status });
           });
+          break; // Exit retry loop on success
         } catch (error: any) {
           attempt++;
           if (
@@ -614,6 +620,32 @@ export class PaymentService extends BaseService {
           throw error;
         }
       }
+
+      // Dispatch webhooks outside transaction
+      if (shouldDispatchWebhook) {
+        try {
+          // Dynamic import to avoid circular dependencies if any
+          const { webhookDispatchQueue } = await import('../../lib/queue');
+          
+          const webhooks = await this.prisma.webhook.findMany({
+            where: { creatorId: finalTip.creatorId, active: true },
+          });
+          
+          for (const webhook of webhooks) {
+            if (webhook.events.includes('tip.completed') || webhook.events.includes('tip.confirmed')) {
+              await webhookDispatchQueue.add('webhook-dispatch', {
+                webhookId: webhook.id,
+                eventType: 'tip.completed',
+                payload: { tip: finalTip },
+              });
+            }
+          }
+        } catch (e) {
+          logger.error(`Failed to dispatch webhooks for tip ${tipId}:`, e);
+        }
+      }
+
+      return finalTip;
     });
   }
 
