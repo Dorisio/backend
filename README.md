@@ -312,3 +312,11 @@ See `SECURITY.md` for:
 ## License
 
 MIT. See `LICENSE` for details.
+
+
+## Platform additions (Issues #27–#30)
+
+- **Jobs / workers** — see [`docs/JOBS.md`](docs/JOBS.md)
+- **CORS & security headers** — see [`docs/CORS.md`](docs/CORS.md)
+- **Database indexes** — see [`docs/INDEXING.md`](docs/INDEXING.md)
+- **GraphQL** — see [`docs/GRAPHQL.md`](docs/GRAPHQL.md) (`POST /graphql`)
