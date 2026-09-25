@@ -5,6 +5,12 @@ import crypto from 'crypto';
 import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '../queue';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
+import crypto from 'crypto';
+
+const redis = createClient({
+  url: config.REDIS_URL,
+});
 
 const prisma = new PrismaClient();
 
