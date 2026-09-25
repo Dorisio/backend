@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { AdminService, FlagWalletRequest, FreezeAccountRequest } from './admin.service';
 import { formatSuccess, formatError } from '../../types/response';
-import { authMiddleware } from '../../middleware/auth';
+import { requireAdmin } from '../../middleware/rbac';
 import { ValidationError, AppError, UnauthorizedError } from '../../utils/errors';
 import cache, { getStats, getHitRate, resetStats } from '../../lib/cache/index';
 import { CacheWarmer } from '../../lib/cache/cache-warming';
@@ -14,7 +14,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Params: { address: string }; Body: FlagWalletRequest }>(
     '/api/v1/admin/wallets/:address/flag',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -67,7 +67,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Params: { flagId: string } }>(
     '/api/v1/admin/wallets/flags/:flagId/resolve',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -110,7 +110,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Params: { creatorId: string }; Body: FreezeAccountRequest }>(
     '/api/v1/admin/creators/:creatorId/freeze',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -163,7 +163,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Params: { freezeId: string } }>(
     '/api/v1/admin/creators/freezes/:freezeId/resolve',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -206,7 +206,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.get(
     '/api/v1/admin/moderation',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -246,7 +246,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.get(
     '/api/v1/admin/cache/stats',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -282,7 +282,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post(
     '/api/v1/admin/cache/clear',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -318,7 +318,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Body: { key: string } }>(
     '/api/v1/admin/cache/invalidate',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -362,7 +362,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post<{ Body: { type?: string } }>(
     '/api/v1/admin/cache/warm',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
@@ -422,7 +422,7 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
   app.post(
     '/api/v1/admin/cache/reset-stats',
     {
-      preHandler: authMiddleware,
+      preHandler: requireAdmin,
       schema: {
         
         
