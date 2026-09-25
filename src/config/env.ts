@@ -7,6 +7,9 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3000'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  // Max time (ms) to wait for in-flight requests to drain and resources to
+  // close on SIGTERM/SIGINT before forcing exit (#23).
+  SHUTDOWN_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   DATABASE_URL: z.string().optional(),
   DB_POOL_MIN: z.string().transform(Number).default('2'),
   DB_POOL_MAX: z.string().transform(Number).default('20'),
@@ -47,24 +50,35 @@ const EnvSchema = z.object({
   JWT_SECRET: z.string().default('your-secret-key-change-in-production'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  // Error tracking (Sentry compatible)
+  SENTRY_DSN: z.string().optional(),
+  ERROR_TRACKING_ENABLED: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
+  ERROR_TRACKING_SAMPLE_RATE: z
+    .string()
+    .transform(Number)
+    .refine((val) => !Number.isNaN(val) && val >= 0 && val <= 1, {
+      message: 'ERROR_TRACKING_SAMPLE_RATE must be between 0 and 1',
+    })
+    .default('1'),
+  ERROR_TRACKING_TIMEOUT_MS: z.string().transform(Number).default('5000'),
   STELLAR_NETWORK: z.enum(['testnet', 'mainnet', 'standalone']).default('testnet'),
   STELLAR_HORIZON_URL: z.string().default('https://horizon-testnet.stellar.org'),
   STELLAR_HORIZON_TIMEOUT_MS: z.string().transform(Number).default('60000'),
   STELLAR_SERVER_SECRET_KEY: z.string().optional(),
   USDC_CONTRACT_ID: z.string().optional(),
   USDC_ISSUER: z.string().optional(),
+  // External payment processing
+  PAYMENTS_PROVIDER: z.enum(['stripe', 'none']).default('none'),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
+  PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
-  // Issue #28 — CORS
-  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:5173'),
-  CORS_CREDENTIALS: z.string().transform((v) => v !== 'false').default('true'),
-  CORS_MAX_AGE: z.string().transform(Number).default('86400'),
-  // Issue #27 — workers / jobs
-  WORKER_CONCURRENCY: z.string().transform(Number).default('10'),
-  ENABLE_WORKERS: z.string().transform((v) => v === 'true').default('false'),
-  // Issue #30 — GraphQL
-  GRAPHQL_ENABLED: z.string().transform((v) => v !== 'false').default('true'),
-  GRAPHQL_MAX_DEPTH: z.string().transform(Number).default('5'),
-  GRAPHQL_MAX_COMPLEXITY: z.string().transform(Number).default('100'),
+  SENDGRID_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().email().optional(),
 });
 
 type Environment = z.infer<typeof EnvSchema>;
@@ -81,10 +95,3 @@ const validateEnv = (): Environment => {
 };
 
 export const config = validateEnv();
-
-/** Parsed CORS allow-list. Use `*` via CORS_ORIGINS=* for open (dev only). */
-export function getCorsOrigins(): boolean | string[] {
-  const raw = config.CORS_ORIGINS.trim();
-  if (raw === '*') return true;
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
-}

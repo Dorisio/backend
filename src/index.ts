@@ -1,5 +1,8 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
-import cookie from '@fastify/cookie';
+import { randomUUID } from 'node:crypto';
+import cors from '@fastify/cors';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
 import { applyJsonSerializer } from './config/serialization';
 import { AppError } from './utils/errors';
@@ -10,21 +13,26 @@ import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
+import { registerChargeRoutes } from './domains/payments/charge.routes';
 import { registerUserRoutes } from './domains/users/user.routes';
 import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
+import { registerNotificationRoutes } from './domains/notifications/notification.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
-import redisPool, { startRedisHealthCheck } from './lib/redisPool';
-import { setServiceState } from './services/health.service';
-import { registerSecurityPlugins } from './plugins/security';
-import { registerGraphQL } from './graphql/plugin';
-import { registerJobRoutes } from './domains/jobs/jobs.routes';
-import { startWorkers } from './lib/workers/index';
 import { closeQueues } from './lib/queue';
+import redisPool from './lib/redisPool';
+import { emailNotificationWorker } from './lib/workers/email-notification.worker';
+import { setServiceState } from './services/health.service';
 
 const app = Fastify({
+  genReqId: (request) => {
+    const incoming = request.headers['x-request-id'];
+    return typeof incoming === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming)
+      ? incoming
+      : randomUUID();
+  },
   logger: {
     level: config.LOG_LEVEL,
   },
@@ -108,22 +116,11 @@ app.get('/health', async (_request, _reply) => {
   return checks;
 });
 
-// Error handler
-app.setErrorHandler(async (error, _request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-  if (error instanceof AppError) {
-    reply.code(error.statusCode).send({
-      error: error.message,
-      code: error.code,
-    });
-    return;
-  }
-
-  app.log.error(error);
-  reply.code(500).send({
-    error: 'Internal server error',
-    code: 'INTERNAL_ERROR',
-  });
-});
+// Global error handling: every thrown/validation error is normalized into the
+// standardized error envelope, sanitized, logged with full server-side context
+// and forwarded to the configured error tracker.
+app.setErrorHandler(globalErrorHandler);
+app.setNotFoundHandler(notFoundHandler);
 
 // Service becomes "ready" only once Fastify has finished booting (all
 // plugins/routes registered) - readiness stays 503 until this fires, so
@@ -132,10 +129,19 @@ app.addHook('onReady', async () => {
   setServiceState('ready');
 });
 
-// Graceful shutdown: flip readiness to `shutting_down` first so the
+// Graceful shutdown (#23): flip readiness to `shutting_down` first so the
 // readiness probe starts failing immediately (giving the load balancer a
-// chance to drain traffic away from this instance), then close the
-// Fastify server and its dependencies before the process exits.
+// chance to stop routing new traffic to this instance), then drain and
+// close everything in order: (1) stop accepting new connections and let
+// in-flight requests finish (Fastify's own close()), (2) close the job
+// queues (Redis + BullMQ), (3) close the database connection pool. A hard
+// timeout forces exit if any step hangs, so a stuck close() can't leave
+// the process running forever under an orchestrator expecting it to stop.
+//
+// This replaces two separate, competing SIGTERM/SIGINT handlers that used
+// to be registered here — both fired on the same signal, both raced to
+// call `process.exit()`, and neither called `closeQueues()`, so pending
+// BullMQ jobs and their Redis connections were never drained.
 let shuttingDown = false;
 
 const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
@@ -145,11 +151,31 @@ const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
   app.log.info(`Received ${signal}, starting graceful shutdown`);
   setServiceState('shutting_down');
 
+  const forceExitTimer = setTimeout(() => {
+    app.log.error(
+      `Graceful shutdown did not complete within ${config.SHUTDOWN_TIMEOUT_MS}ms, forcing exit`
+    );
+    process.exit(1);
+  }, config.SHUTDOWN_TIMEOUT_MS);
+  forceExitTimer.unref();
+
   try {
+    // Stops accepting new connections and resolves once in-flight
+    // requests have completed (bounded by Fastify's own close semantics;
+    // the forceExitTimer above is the outer safety net for this whole
+    // sequence, including this step).
     await app.close();
+    await emailNotificationWorker.close();
+    await closeQueues();
+    await closeDatabase();
     await prisma.$disconnect();
+    app.log.info('Database connections closed');
+
+    clearTimeout(forceExitTimer);
+    app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
+    clearTimeout(forceExitTimer);
     app.log.error(err, 'Error during graceful shutdown');
     process.exit(1);
   }
@@ -165,6 +191,12 @@ process.on('SIGINT', () => {
 const bootstrap = async (): Promise<void> => {
   await registerSecurityPlugins(app);
   await app.register(cookie);
+
+  // API versioning (#25): validates an optional API-Version header against
+  // SUPPORTED_API_VERSIONS and records per-version usage metrics. Existing
+  // /api/v1/... paths are untouched — this only adds header validation and
+  // observability.
+  registerApiVersioning(app);
 
   registerAuthRoutes(app, prisma);
   registerWalletRoutes(app, prisma);
@@ -207,24 +239,6 @@ const start = async (): Promise<void> => {
     process.exit(1);
   }
 };
-
-const handleShutdown = async (signal: string): Promise<void> => {
-  app.log.info(`Received ${signal}, starting graceful shutdown...`);
-  try {
-    await app.close();
-    await closeDatabase();
-    await prisma.$disconnect();
-    await closeQueues().catch(() => undefined);
-    app.log.info('Graceful shutdown complete');
-    process.exit(0);
-  } catch (err) {
-    app.log.error({ err }, 'Error during shutdown');
-    process.exit(1);
-  }
-};
-
-process.on('SIGINT', () => handleShutdown('SIGINT'));
-process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
 start();
 

@@ -30,6 +30,14 @@ export const authCounter = new Counter({
   labelNames: ['type', 'status'],
 });
 
+// API version usage (#25) — tracked per request so deprecation timing
+// decisions are based on real client traffic, not assumption.
+export const apiVersionCounter = new Counter({
+  name: 'dorisio_api_version_requests_total',
+  help: 'Total requests by resolved API version',
+  labelNames: ['version', 'path'],
+});
+
 // Gauges
 export const activeTipsGauge = new Gauge({
   name: 'dorisio_active_tips',
