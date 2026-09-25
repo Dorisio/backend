@@ -9,10 +9,10 @@ let paymentService: PaymentService;
 let userService: UserService;
 let payoutService: PayoutService;
 
-// Test data
 let testUserId: string;
 let testCreatorId: string;
 let testCreatorUserId: string;
+let isDbAvailable = false;
 
 const isDbAvailable = Boolean(process.env.DATABASE_URL);
 

@@ -140,6 +140,7 @@ model WebhookEvent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([webhookId, status, createdAt(sort: Desc)])
   @@index([webhookId])
   @@index([status])
   @@index([webhookId, status])
@@ -161,6 +162,8 @@ model WalletFlag {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([resolved, address])
+  @@index([resolved, createdAt(sort: Desc)])
   @@index([resolved])
   @@index([severity])
 }
@@ -182,6 +185,7 @@ model AccountFreeze {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([creatorId, resolved, expiresAt])
   @@index([creatorId])
   @@index([resolved])
   @@index([expiresAt])
