@@ -1,5 +1,4 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
-import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import { config } from './config/env';
 import { AppError } from './utils/errors';
@@ -17,7 +16,11 @@ import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import redisPool, { startRedisHealthCheck } from './lib/redisPool';
 import { setServiceState } from './services/health.service';
-import { initializeCacheWarming } from './lib/cache/cache-warming';
+import { registerSecurityPlugins } from './plugins/security';
+import { registerGraphQL } from './graphql/plugin';
+import { registerJobRoutes } from './domains/jobs/jobs.routes';
+import { startWorkers } from './lib/workers/index';
+import { closeQueues } from './lib/queue';
 
 const app = Fastify({
   logger: {
@@ -28,23 +31,8 @@ const app = Fastify({
 // Initialize Prisma
 const prisma = new PrismaClient();
 
-// Register plugins
-app.register(cors, {
-  origin: true,
-  credentials: true,
-});
-app.register(cookie);
-
-// Register routes
-registerAuthRoutes(app, prisma);
-registerWalletRoutes(app, prisma);
-registerPaymentRoutes(app, prisma);
-registerUserRoutes(app, prisma);
-registerCreatorPayoutRoutes(app, prisma);
-registerWebhookRoutes(app, prisma);
-registerAnalyticsRoutes(app, prisma);
-registerAdminRoutes(app, prisma);
-registerMetricsRoute(app, prisma);
+// Plugins + routes are registered inside `bootstrap()` so async security /
+// GraphQL plugins finish before the server accepts traffic.
 
 // Health check endpoint
 app.get('/health', async (_request, _reply) => {
@@ -150,8 +138,28 @@ process.on('SIGINT', () => {
   void shutdown('SIGINT');
 });
 
+const bootstrap = async (): Promise<void> => {
+  await registerSecurityPlugins(app);
+  await app.register(cookie);
+
+  registerAuthRoutes(app, prisma);
+  registerWalletRoutes(app, prisma);
+  registerPaymentRoutes(app, prisma);
+  registerUserRoutes(app, prisma);
+  registerCreatorPayoutRoutes(app, prisma);
+  registerWebhookRoutes(app, prisma);
+  registerAnalyticsRoutes(app, prisma);
+  registerAdminRoutes(app, prisma);
+  registerMetricsRoute(app, prisma);
+  registerJobRoutes(app);
+
+  await registerGraphQL(app, prisma);
+};
+
 const start = async (): Promise<void> => {
   try {
+    await bootstrap();
+
     if (config.DATABASE_URL) {
       try {
         await initializeDatabase();
@@ -160,13 +168,11 @@ const start = async (): Promise<void> => {
       }
     }
 
-    // Start Redis health check
     startRedisHealthCheck();
 
-    // Initialize cache warming (non-blocking)
-    if (config.DATABASE_URL) {
-      initializeCacheWarming(prisma).catch((err) => {
-        app.log.warn({ err }, 'Cache warming failed, continuing startup');
+    if (config.ENABLE_WORKERS) {
+      startWorkers().catch((err) => {
+        app.log.error({ err }, 'Failed to start background workers');
       });
     }
 
@@ -184,6 +190,7 @@ const handleShutdown = async (signal: string): Promise<void> => {
     await app.close();
     await closeDatabase();
     await prisma.$disconnect();
+    await closeQueues().catch(() => undefined);
     app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
