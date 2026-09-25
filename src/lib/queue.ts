@@ -1,4 +1,6 @@
-import { Queue, QueueEvents, type JobsOptions, type ConnectionOptions } from 'bullmq';
+import { Queue, Worker, QueueEvents } from 'bullmq';
+import IORedis from 'ioredis';
+import { createClient } from 'redis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
@@ -28,16 +30,23 @@ export const defaultJobOptions: JobsOptions = {
   priority: JobPriority.normal,
 };
 
-export function backoffStrategy(attemptsMade: number): number {
-  const idx = Math.min(Math.max(attemptsMade - 1, 0), RETRY_DELAYS_MS.length - 1);
-  return RETRY_DELAYS_MS[idx];
-}
+// Job queues
+export const stellarConfirmationQueue = new Queue('stellar-confirmation', {
+  connection: redis as any,
+});
+export const webhookDispatchQueue = new Queue('webhook-dispatch', { connection: redis as any });
+export const emailNotificationRedis = new IORedis(config.REDIS_URL, { maxRetriesPerRequest: null });
+export const emailNotificationEventsRedis = emailNotificationRedis.duplicate();
+export const emailNotificationQueue = new Queue('email-notifications', { connection: emailNotificationRedis as any });
 
 export function priorityValue(name: JobPriorityName = 'normal'): number {
   return JobPriority[name];
 }
 
-const connection = bullConnection;
+export const webhookDispatchEvents = new QueueEvents('webhook-dispatch', {
+  connection: redis as any,
+});
+export const emailNotificationEvents = new QueueEvents('email-notifications', { connection: emailNotificationEventsRedis as any });
 
 export const QUEUE_NAMES = {
   stellarConfirmation: 'stellar-confirmation',
@@ -147,14 +156,21 @@ export async function getQueueHealth() {
   return report;
 }
 
+emailNotificationEvents.on('completed', ({ jobId }) => {
+  logger.info({ jobId }, 'Email notification delivered');
+});
+emailNotificationEvents.on('failed', ({ jobId, failedReason }) => {
+  logger.error({ jobId, failedReason }, 'Email notification delivery failed');
+});
+
 export async function closeQueues() {
-  await Promise.all(allQueues.map((q) => q.close()));
-  await Promise.all([
-    stellarConfirmationEvents.close(),
-    webhookDispatchEvents.close(),
-    emailEvents.close(),
-    imageProcessingEvents.close(),
-    analyticsEvents.close(),
-    exportsEvents.close(),
-  ]);
+  await stellarConfirmationQueue.close();
+  await webhookDispatchQueue.close();
+  await emailNotificationQueue.close();
+  await stellarConfirmationEvents.close();
+  await webhookDispatchEvents.close();
+  await emailNotificationEvents.close();
+  await emailNotificationRedis.quit();
+  await emailNotificationEventsRedis.quit();
+  await redis.quit();
 }

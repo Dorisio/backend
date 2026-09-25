@@ -1,10 +1,12 @@
-import Fastify from 'fastify';
+import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import cors from '@fastify/cors';
-import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
-import { applyJsonSerializer } from './config/serialization';
+import { swaggerConfig } from './config/swagger';
+import { requestDurationHistogram } from './lib/metrics';
+import { runWithRequestId } from './utils/request-context';
 import { AppError } from './utils/errors';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
@@ -19,18 +21,20 @@ import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
+import { registerNotificationRoutes } from './domains/notifications/notification.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
-import redisPool, { startRedisHealthCheck } from './lib/redisPool';
-import { setServiceState } from './services/health.service';
-import { registerSecurityPlugins } from './plugins/security';
-import { registerGraphQL } from './graphql/plugin';
-import { registerJobRoutes } from './domains/jobs/jobs.routes';
-import { startWorkers } from './lib/workers/index';
 import { closeQueues } from './lib/queue';
-import { registerApiVersioning } from './plugins/apiVersion';
-import { registerRequestLogging } from './plugins/requestLogging';
+import redisPool from './lib/redisPool';
+import { emailNotificationWorker } from './lib/workers/email-notification.worker';
+import { setServiceState } from './services/health.service';
 
 const app = Fastify({
+  genReqId: (request) => {
+    const incoming = request.headers['x-request-id'];
+    return typeof incoming === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming)
+      ? incoming
+      : randomUUID();
+  },
   logger: {
     level: config.LOG_LEVEL,
   },
@@ -43,6 +47,8 @@ const prisma = new PrismaClient();
 applyJsonSerializer(app);
 
 // Register plugins
+app.register(swagger, { swagger: swaggerConfig.swagger as any });
+app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list' } });
 app.register(cors, {
   origin: true,
   credentials: true,
@@ -53,6 +59,31 @@ app.register(cookie, {
   secret: config.JWT_SECRET,
 });
 
+app.addHook('onSend', async (request, reply, payload) => {
+  reply.header('x-request-id', request.id);
+  return payload;
+});
+
+const requestStartTimes = new WeakMap<object, number>();
+app.addHook('onRequest', (request, _reply, done) => {
+  requestStartTimes.set(request, performance.now());
+  runWithRequestId(request.id, done);
+});
+app.addHook('onResponse', (request, reply, done) => {
+  const startedAt = requestStartTimes.get(request);
+  if (startedAt !== undefined) {
+    requestDurationHistogram.observe({
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      status: String(reply.statusCode),
+    }, (performance.now() - startedAt) / 1000);
+    requestStartTimes.delete(request);
+  }
+  done();
+});
+
+app.get('/api-spec.json', async () => app.swagger());
+
 // Register routes
 registerAuthRoutes(app, prisma);
 registerWalletRoutes(app, prisma);
@@ -62,7 +93,7 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
-registerChargeRoutes(app, prisma);
+registerNotificationRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint
@@ -164,11 +195,8 @@ const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
     // the forceExitTimer above is the outer safety net for this whole
     // sequence, including this step).
     await app.close();
-    app.log.info('HTTP server closed, in-flight requests drained');
-
+    await emailNotificationWorker.close();
     await closeQueues();
-    app.log.info('Job queues closed');
-
     await closeDatabase();
     await prisma.$disconnect();
     app.log.info('Database connections closed');

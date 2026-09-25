@@ -20,7 +20,9 @@ const mockPrisma = {
     findMany: vi.fn(),
     count: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
+  $transaction: vi.fn((callback: (tx: any) => Promise<unknown>) => callback(mockPrisma)),
 };
 
 describe('PaymentService', () => {
@@ -298,16 +300,11 @@ describe('PaymentService', () => {
         creatorId,
         amount: 100,
         status: 'pending',
-      });
-
-      mockPrisma.tip.update.mockResolvedValue({
-        id: tipId,
-        creatorId,
-        amount: 100,
-        status: 'completed',
         createdAt: new Date(),
         updatedAt: new Date(),
       });
+
+      mockPrisma.tip.updateMany.mockResolvedValue({ count: 1 });
 
       mockPrisma.creator.update.mockResolvedValue({
         id: creatorId,
@@ -319,6 +316,10 @@ describe('PaymentService', () => {
 
       expect(result.status).toBe('completed');
       expect(mockPrisma.creator.update).toHaveBeenCalled();
+      expect(mockPrisma.tip.updateMany).toHaveBeenCalledWith({
+        where: { id: tipId, status: 'pending' },
+        data: { status: 'completed' },
+      });
     });
 
     it('should throw NotFoundError if tip does not exist', async () => {
@@ -327,6 +328,18 @@ describe('PaymentService', () => {
       await expect(
         paymentService.updateTipStatus('non-existent', { status: 'completed' })
       ).rejects.toThrow(NotFoundError);
+    });
+
+    it('does not credit earnings if another worker already changed the status', async () => {
+      mockPrisma.tip.findUnique.mockResolvedValueOnce({
+        id: 'tip-race', creatorId: 'creator-123', amount: 100, status: 'pending',
+      });
+      mockPrisma.tip.updateMany.mockResolvedValueOnce({ count: 0 });
+
+      await expect(
+        paymentService.updateTipStatus('tip-race', { status: 'completed' }),
+      ).rejects.toThrow('changed concurrently');
+      expect(mockPrisma.creator.update).not.toHaveBeenCalled();
     });
   });
 });

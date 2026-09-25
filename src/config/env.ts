@@ -77,17 +77,8 @@ const EnvSchema = z.object({
   STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
   PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
-  // Issue #28 — CORS
-  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:5173'),
-  CORS_CREDENTIALS: z.string().transform((v) => v !== 'false').default('true'),
-  CORS_MAX_AGE: z.string().transform(Number).default('86400'),
-  // Issue #27 — workers / jobs
-  WORKER_CONCURRENCY: z.string().transform(Number).default('10'),
-  ENABLE_WORKERS: z.string().transform((v) => v === 'true').default('false'),
-  // Issue #30 — GraphQL
-  GRAPHQL_ENABLED: z.string().transform((v) => v !== 'false').default('true'),
-  GRAPHQL_MAX_DEPTH: z.string().transform(Number).default('5'),
-  GRAPHQL_MAX_COMPLEXITY: z.string().transform(Number).default('100'),
+  SENDGRID_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().email().optional(),
 });
 
 type Environment = z.infer<typeof EnvSchema>;
@@ -104,10 +95,3 @@ const validateEnv = (): Environment => {
 };
 
 export const config = validateEnv();
-
-/** Parsed CORS allow-list. Use `*` via CORS_ORIGINS=* for open (dev only). */
-export function getCorsOrigins(): boolean | string[] {
-  const raw = config.CORS_ORIGINS.trim();
-  if (raw === '*') return true;
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
-}
