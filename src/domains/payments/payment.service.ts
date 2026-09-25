@@ -356,6 +356,145 @@ export class PaymentService extends BaseService {
   }
 
   /**
+   * List tips for a creator using cursor-based keyset pagination
+   */
+  async listTipsCursor(
+    creatorId: string,
+    params: { first?: number; after?: string; last?: number; before?: string } = {}
+  ): Promise<{
+    edges: Array<{ node: TipResponse; cursor: string }>;
+    pageInfo: {
+      hasNextPage: boolean;
+      hasPreviousPage: boolean;
+      startCursor: string | null;
+      endCursor: string | null;
+      totalCount?: number;
+    };
+    total?: number;
+  }> {
+    return this.executeWithLogging('payment.listTipsCursor', async () => {
+      const creator = await this.prisma.creator.findUnique({
+        where: { id: creatorId },
+      });
+
+      if (!creator) {
+        throw new NotFoundError('Creator');
+      }
+
+      const limit = params.first ?? params.last ?? 20;
+      if (limit < 1 || limit > 100) {
+        throw new ValidationError('Limit must be between 1 and 100');
+      }
+
+      let cursorObj: { id: string; createdAt: string } | undefined;
+      if (params.after) {
+        try {
+          const json = Buffer.from(params.after, 'base64url').toString('utf8');
+          cursorObj = JSON.parse(json);
+        } catch {
+          throw new ValidationError('Invalid pagination cursor');
+        }
+      }
+
+      const tips = await this.prisma.tip.findMany({
+        where: {
+          creatorId,
+        },
+        take: limit + 1,
+        ...(cursorObj ? { cursor: { id: cursorObj.id }, skip: 1 } : {}),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+
+      const hasMore = tips.length > limit;
+      const nodes = hasMore ? tips.slice(0, limit) : tips;
+
+      const edges = nodes.map((tip) => ({
+        node: this.formatTipResponse(tip),
+        cursor: Buffer.from(
+          JSON.stringify({ id: tip.id, createdAt: tip.createdAt.toISOString() }),
+          'utf8'
+        ).toString('base64url'),
+      }));
+
+      const startCursor = edges.length > 0 ? edges[0].cursor : null;
+      const endCursor = edges.length > 0 ? edges[edges.length - 1].cursor : null;
+
+      return {
+        edges,
+        pageInfo: {
+          hasNextPage: hasMore,
+          hasPreviousPage: Boolean(params.after),
+          startCursor,
+          endCursor,
+        },
+      };
+    });
+  }
+
+  /**
+   * List user tip history using cursor-based keyset pagination
+   */
+  async getUserTipHistoryCursor(
+    userId: string,
+    params: { first?: number; after?: string; last?: number; before?: string } = {}
+  ): Promise<{
+    edges: Array<{ node: TipResponse; cursor: string }>;
+    pageInfo: {
+      hasNextPage: boolean;
+      hasPreviousPage: boolean;
+      startCursor: string | null;
+      endCursor: string | null;
+    };
+  }> {
+    return this.executeWithLogging('payment.getUserTipHistoryCursor', async () => {
+      const limit = params.first ?? params.last ?? 20;
+      if (limit < 1 || limit > 100) {
+        throw new ValidationError('Limit must be between 1 and 100');
+      }
+
+      let cursorObj: { id: string; createdAt: string } | undefined;
+      if (params.after) {
+        try {
+          const json = Buffer.from(params.after, 'base64url').toString('utf8');
+          cursorObj = JSON.parse(json);
+        } catch {
+          throw new ValidationError('Invalid pagination cursor');
+        }
+      }
+
+      const tips = await this.prisma.tip.findMany({
+        where: {
+          fromUserId: userId,
+        },
+        take: limit + 1,
+        ...(cursorObj ? { cursor: { id: cursorObj.id }, skip: 1 } : {}),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
+
+      const hasMore = tips.length > limit;
+      const nodes = hasMore ? tips.slice(0, limit) : tips;
+
+      const edges = nodes.map((tip) => ({
+        node: this.formatTipResponse(tip),
+        cursor: Buffer.from(
+          JSON.stringify({ id: tip.id, createdAt: tip.createdAt.toISOString() }),
+          'utf8'
+        ).toString('base64url'),
+      }));
+
+      return {
+        edges,
+        pageInfo: {
+          hasNextPage: hasMore,
+          hasPreviousPage: Boolean(params.after),
+          startCursor: edges.length > 0 ? edges[0].cursor : null,
+          endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null,
+        },
+      };
+    });
+  }
+
+  /**
    * Update tip status (typically used by transaction listener/confirmation service)
    * Can only update to specific statuses based on current state
    */
