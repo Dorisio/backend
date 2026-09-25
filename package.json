@@ -17,7 +17,12 @@
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "db:migrate": "tsx src/db/run-migrations.ts --up",
+    "db:migrate:dry-run": "tsx src/db/run-migrations.ts --dry-run",
+    "db:rollback": "tsx src/db/run-migrations.ts --down",
+    "worker": "tsx src/lib/workers/index.ts",
+    "jobs:status": "tsx src/lib/jobs/cli-status.ts"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

@@ -1,8 +1,37 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createClient } from 'redis';
 import { cacheService, CacheService } from './cache';
 import { cacheConfig } from '../config/cache';
 
-describe('CacheService', () => {
+// These tests exercise real Redis behaviour. Skip them when no Redis server
+// is reachable (e.g. CI jobs that only provision a database), matching the
+// convention used in src/__tests__/redis.pool.test.ts.
+const isRedisAvailable = async (): Promise<boolean> => {
+  const client = createClient({
+    url: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379',
+    socket: {
+      timeout: 1000,
+      reconnectStrategy: false,
+    },
+  });
+
+  try {
+    await client.connect();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      await client.quit();
+    } catch {
+      // no-op: the Redis client may already be disconnected.
+    }
+  }
+};
+
+const canUseRedis = await isRedisAvailable();
+
+describe.skipIf(!canUseRedis)('CacheService', () => {
   let service: CacheService;
 
   beforeEach(() => {

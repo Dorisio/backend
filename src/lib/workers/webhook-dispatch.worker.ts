@@ -1,9 +1,11 @@
 import { Worker, Job } from 'bullmq';
-import { createClient } from 'redis';
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
+import crypto from 'crypto';
+import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '../queue';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
 import crypto from 'crypto';
 
 const redis = createClient({
@@ -12,26 +14,25 @@ const redis = createClient({
 
 const prisma = new PrismaClient();
 
-export const webhookDispatchWorker = new Worker(
-  'webhook-dispatch',
-  async (job: Job) => {
-    const { webhookId, eventType, payload } = job.data;
+export function createWebhookDispatchWorker() {
+  const worker = new Worker(
+    QUEUE_NAMES.webhookDispatch,
+    async (job: Job) => {
+      const { webhookId, eventType, payload } = job.data;
+      logger.info(`Dispatching webhook ${webhookId} for ${eventType} event`);
+      await job.updateProgress(20);
 
-    logger.info(`Dispatching webhook ${webhookId} for ${eventType} event`);
-
-    try {
       const webhook = await prisma.webhook.findUnique({ where: { id: webhookId } });
-
       if (!webhook) {
         throw new Error(`Webhook ${webhookId} not found`);
       }
 
-      // Create signature for webhook verification
       const signature = crypto
         .createHmac('sha256', webhook.secret)
         .update(JSON.stringify(payload))
         .digest('hex');
 
+      await job.updateProgress(60);
       const response = await axios.post(webhook.url, payload, {
         headers: {
           'Content-Type': 'application/json',
@@ -40,49 +41,43 @@ export const webhookDispatchWorker = new Worker(
           'X-Dorisio-Delivery-Id': job.id,
           'X-Request-Id': String(job.data.requestId ?? job.id),
         },
-        timeout: 30000,
+        timeout: 10_000,
+        validateStatus: () => true,
       });
 
-      // Track successful dispatch
-      await prisma.webhookEvent.update({
-        where: { id: job.data.eventId },
+      await prisma.webhookEvent.create({
         data: {
-          status: 'delivered',
-          attempts: { increment: 1 },
-          updatedAt: new Date(),
+          webhookId,
+          eventType,
+          payload: JSON.stringify(payload),
+          status: response.status >= 200 && response.status < 300 ? 'delivered' : 'failed',
+          attempts: job.attemptsMade + 1,
+          lastError: response.status >= 300 ? `HTTP ${response.status}` : null,
         },
       });
 
-      logger.info(`Webhook ${webhookId} dispatched successfully (status ${response.status})`);
-      return { success: true, webhookId, statusCode: response.status };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Webhook delivery failed with HTTP ${response.status}`);
+      }
 
-      logger.error(`Webhook dispatch failed for ${webhookId}:`, error);
+      await job.updateProgress(100);
+      return { delivered: true, status: response.status };
+    },
+    {
+      connection: bullConnection,
+      concurrency: config.WORKER_CONCURRENCY,
+      settings: { backoffStrategy },
+    },
+  );
 
-      // Track failed dispatch attempt
-      await prisma.webhookEvent.update({
-        where: { id: job.data.eventId },
-        data: {
-          status: 'pending',
-          attempts: { increment: 1 },
-          lastError: errorMsg,
-          updatedAt: new Date(),
-        },
-      });
-
-      throw error;
+  worker.on('failed', async (job, err) => {
+    if (job && job.attemptsMade >= (job.opts.attempts ?? 5)) {
+      await moveToDeadLetter(QUEUE_NAMES.webhookDispatch, String(job.id), job.data, err.message);
     }
-  },
-  {
-    connection: redis as any,
-  }
-);
+  });
 
-webhookDispatchWorker.on('completed', (job) => {
-  logger.info(`Webhook dispatch worker completed job ${job.id}`);
-});
+  return worker;
+}
 
-webhookDispatchWorker.on('failed', (job, err) => {
-  logger.error(`Webhook dispatch worker failed job ${job?.id}:`, err);
-});
+/** @deprecated prefer createWebhookDispatchWorker() */
+export const webhookDispatchWorker = createWebhookDispatchWorker();

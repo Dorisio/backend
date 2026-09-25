@@ -4,23 +4,31 @@ import { createClient } from 'redis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
-// Redis connection for BullMQ (using redis client package)
-export const redis = createClient({
+export const bullConnection: ConnectionOptions = {
   url: config.REDIS_URL,
-});
+  maxRetriesPerRequest: null,
+};
 
-redis.on('connect', () => {
-  logger.info('Connected to Redis');
-});
+/** Priority: higher number = processed first. */
+export const JobPriority = {
+  low: 1,
+  normal: 5,
+  high: 10,
+} as const;
+export type JobPriorityName = keyof typeof JobPriority;
 
-redis.on('error', (err) => {
-  logger.error('Redis connection error:', err);
-});
+/** Retry delays: 5s, 30s, 5min, 30min, 24h (Issue #27). */
+export const RETRY_DELAYS_MS = [5_000, 30_000, 300_000, 1_800_000, 86_400_000] as const;
 
-// Initialize Redis connection
-redis.connect().catch((err) => {
-  logger.error('Failed to connect to Redis:', err);
-});
+export const defaultJobOptions: JobsOptions = {
+  attempts: 5,
+  backoff: {
+    type: 'custom',
+  },
+  removeOnComplete: { count: 1000 },
+  removeOnFail: false, // keep for DLQ inspection
+  priority: JobPriority.normal,
+};
 
 // Job queues
 export const stellarConfirmationQueue = new Queue('stellar-confirmation', {
@@ -31,32 +39,122 @@ export const emailNotificationRedis = new IORedis(config.REDIS_URL, { maxRetries
 export const emailNotificationEventsRedis = emailNotificationRedis.duplicate();
 export const emailNotificationQueue = new Queue('email-notifications', { connection: emailNotificationRedis as any });
 
-// Queue event handlers
-export const stellarConfirmationEvents = new QueueEvents('stellar-confirmation', {
-  connection: redis as any,
-});
+export function priorityValue(name: JobPriorityName = 'normal'): number {
+  return JobPriority[name];
+}
 
 export const webhookDispatchEvents = new QueueEvents('webhook-dispatch', {
   connection: redis as any,
 });
 export const emailNotificationEvents = new QueueEvents('email-notifications', { connection: emailNotificationEventsRedis as any });
 
-// Initialize queue event listeners
-stellarConfirmationEvents.on('completed', ({ jobId }) => {
-  logger.info(`Stellar confirmation job ${jobId} completed`);
-});
+export const QUEUE_NAMES = {
+  stellarConfirmation: 'stellar-confirmation',
+  webhookDispatch: 'webhook-dispatch',
+  email: 'email',
+  imageProcessing: 'image-processing',
+  analytics: 'analytics',
+  exports: 'exports',
+  deadLetter: 'dead-letter',
+} as const;
 
-stellarConfirmationEvents.on('failed', ({ jobId, failedReason }) => {
-  logger.error(`Stellar confirmation job ${jobId} failed: ${failedReason}`);
+export const stellarConfirmationQueue = new Queue(QUEUE_NAMES.stellarConfirmation, {
+  connection,
+  defaultJobOptions
 });
+export const webhookDispatchQueue = new Queue(QUEUE_NAMES.webhookDispatch, {
+  connection,
+  defaultJobOptions
+});
+export const emailQueue = new Queue(QUEUE_NAMES.email, {
+  connection,
+  defaultJobOptions
+});
+export const imageProcessingQueue = new Queue(QUEUE_NAMES.imageProcessing, {
+  connection,
+  defaultJobOptions
+});
+export const analyticsQueue = new Queue(QUEUE_NAMES.analytics, {
+  connection,
+  defaultJobOptions
+});
+export const exportsQueue = new Queue(QUEUE_NAMES.exports, {
+  connection,
+  defaultJobOptions
+});
+export const deadLetterQueue = new Queue(QUEUE_NAMES.deadLetter, { connection });
 
-webhookDispatchEvents.on('completed', ({ jobId }) => {
-  logger.info(`Webhook dispatch job ${jobId} completed`);
-});
+export const allQueues = [
+  stellarConfirmationQueue,
+  webhookDispatchQueue,
+  emailQueue,
+  imageProcessingQueue,
+  analyticsQueue,
+  exportsQueue,
+  deadLetterQueue,
+];
 
-webhookDispatchEvents.on('failed', ({ jobId, failedReason }) => {
-  logger.error(`Webhook dispatch job ${jobId} failed: ${failedReason}`);
-});
+function attachEvents(name: string) {
+  const events = new QueueEvents(name, { connection });
+  events.on('completed', ({ jobId }) => logger.info({ queue: name, jobId }, 'job completed'));
+  events.on('failed', ({ jobId, failedReason }) =>
+    logger.error({ queue: name, jobId, failedReason }, 'job failed'),
+  );
+  events.on('progress', ({ jobId, data }) =>
+    logger.debug({ queue: name, jobId, data }, 'job progress'),
+  );
+  return events;
+}
+
+export const stellarConfirmationEvents = attachEvents(QUEUE_NAMES.stellarConfirmation);
+export const webhookDispatchEvents = attachEvents(QUEUE_NAMES.webhookDispatch);
+export const emailEvents = attachEvents(QUEUE_NAMES.email);
+export const imageProcessingEvents = attachEvents(QUEUE_NAMES.imageProcessing);
+export const analyticsEvents = attachEvents(QUEUE_NAMES.analytics);
+export const exportsEvents = attachEvents(QUEUE_NAMES.exports);
+
+export async function moveToDeadLetter(
+  sourceQueue: string,
+  jobId: string,
+  payload: unknown,
+  failedReason: string,
+): Promise<void> {
+  await deadLetterQueue.add(
+    'failed-job',
+    {
+      sourceQueue,
+      originalJobId: jobId,
+      payload,
+      failedReason,
+      failedAt: new Date().toISOString(),
+    },
+    { removeOnComplete: false, removeOnFail: false },
+  );
+  logger.warn({ sourceQueue, jobId, failedReason }, 'job moved to dead-letter queue');
+}
+
+export async function getQueueHealth() {
+  const report = [];
+  for (const q of allQueues) {
+    const [waiting, active, completed, failed, delayed] = await Promise.all([
+      q.getWaitingCount(),
+      q.getActiveCount(),
+      q.getCompletedCount(),
+      q.getFailedCount(),
+      q.getDelayedCount(),
+    ]);
+    report.push({
+      name: q.name,
+      waiting,
+      active,
+      completed,
+      failed,
+      delayed,
+      depth: waiting + active + delayed,
+    });
+  }
+  return report;
+}
 
 emailNotificationEvents.on('completed', ({ jobId }) => {
   logger.info({ jobId }, 'Email notification delivered');

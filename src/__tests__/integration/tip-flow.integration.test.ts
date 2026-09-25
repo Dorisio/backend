@@ -9,7 +9,6 @@ let paymentService: PaymentService;
 let userService: UserService;
 let payoutService: PayoutService;
 
-// Test data
 let testUserId: string;
 let testCreatorId: string;
 let testCreatorUserId: string;
@@ -45,7 +44,7 @@ describe.skipIf(!isDbAvailable)('Tip Flow Integration Tests', () => {
   });
 
   beforeEach(async (ctx) => {
-    if (!isDbAvailable) {
+    if (!isDbAvailable || !prisma) {
       ctx.skip();
       return;
     }

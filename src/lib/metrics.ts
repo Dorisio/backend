@@ -30,6 +30,14 @@ export const authCounter = new Counter({
   labelNames: ['type', 'status'],
 });
 
+// API version usage (#25) — tracked per request so deprecation timing
+// decisions are based on real client traffic, not assumption.
+export const apiVersionCounter = new Counter({
+  name: 'dorisio_api_version_requests_total',
+  help: 'Total requests by resolved API version',
+  labelNames: ['version', 'path'],
+});
+
 // Gauges
 export const activeTipsGauge = new Gauge({
   name: 'dorisio_active_tips',
@@ -86,6 +94,11 @@ export const cacheSizeGauge = new Gauge({
   help: 'Current in-memory fallback cache size',
 });
 
+export const cacheHitRateGauge = new Gauge({
+  name: 'dorisio_cache_hit_rate',
+  help: 'Cache hit rate (0-1)',
+});
+
 export function registerPoolMetrics(pool: Pool<any>) {
   // Expose pool stats via gauges
   const poolUsed = new Gauge({ name: 'dorisio_redis_pool_used', help: 'Number of used connections' });
@@ -94,11 +107,9 @@ export function registerPoolMetrics(pool: Pool<any>) {
 
   setInterval(() => {
     try {
-      // @ts-ignore generic-pool exposes these properties at runtime
+      // generic-pool exposes these properties at runtime
       poolUsed.set((pool as any).borrowed || (pool as any).pending || 0);
-      // @ts-ignore
       poolWaiting.set((pool as any).pending || 0);
-      // @ts-ignore
       poolSize.set((pool as any).size || 0);
     } catch (e) {
       // ignore

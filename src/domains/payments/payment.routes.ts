@@ -13,6 +13,7 @@ import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { rateLimitTipCreation } from '../../middleware/rate-limit';
 import { ValidationError, AppError, NotFoundError } from '../../utils/errors';
+import { idempotencyPreHandler, idempotencyOnSend } from '../../lib/idempotency';
 
 export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const paymentService = new PaymentService(prisma);
@@ -26,7 +27,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
   app.post<{ Body: any }>(
     '/api/v1/transactions/tip',
     {
-      preHandler: [authMiddleware, rateLimitTipCreation],
+      // idempotencyPreHandler runs after authMiddleware so the cache key
+      // can be scoped per authenticated user (#24) — a client sends
+      // Idempotency-Key on this route to make a retried tip-creation
+      // request safe to repeat without double-charging.
+      preHandler: [authMiddleware, rateLimitTipCreation, idempotencyPreHandler],
+      onSend: idempotencyOnSend,
       schema: {
         body: {
           type: 'object',
