@@ -36,19 +36,22 @@ export const webhookDispatchWorker = new Worker(
       // Deliver through the per-endpoint circuit breaker so a repeatedly
       // failing webhook endpoint is skipped (fails fast) until it recovers,
       // instead of consuming a full retry budget on every job.
+      const deliver = () =>
+        axios.post(webhook.url, payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Dorisio-Signature': `sha256=${signature}`,
+            'X-Dorisio-Event': eventType,
+            'X-Dorisio-Delivery-Id': job.id,
+          },
+          timeout: 30000,
+        });
+
       let response;
       try {
-        response = await executeWithBreaker(`webhook:${webhook.url}`, () =>
-          axios.post(webhook.url, payload, {
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Dorisio-Signature': `sha256=${signature}`,
-              'X-Dorisio-Event': eventType,
-              'X-Dorisio-Delivery-Id': job.id,
-            },
-            timeout: 30000,
-          })
-        );
+        response = config.WEBHOOK_CIRCUIT_BREAKER_ENABLED
+          ? await executeWithBreaker(`webhook:${webhook.url}`, deliver)
+          : await deliver();
       } catch (deliveryError) {
         if (deliveryError instanceof CircuitBreakerOpenError) {
           // Circuit open: mark as pending without consuming an attempt so
