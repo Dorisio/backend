@@ -85,6 +85,37 @@ export class PaymentService extends BaseService {
         throw new ValidationError('User does not have a verified wallet');
       }
 
+      // #36 - Block payments from flagged wallets (medium/high/critical severity)
+      const walletFlag = await this.prisma.walletFlag.findFirst({
+        where: {
+          address: wallet.publicKey,
+          resolved: false,
+          severity: { in: ['medium', 'high', 'critical'] },
+        },
+        select: { id: true },
+      });
+
+      if (walletFlag) {
+        logger.warn(`Tip blocked: sender wallet ${wallet.publicKey} is flagged`);
+        throw new ValidationError('Payment cannot be processed at this time');
+      }
+
+      // #36 - Block payments to frozen creator accounts
+      const now = new Date();
+      const accountFreeze = await this.prisma.accountFreeze.findFirst({
+        where: {
+          creatorId: creator.id,
+          resolved: false,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        select: { id: true },
+      });
+
+      if (accountFreeze) {
+        logger.warn(`Tip blocked: creator account ${creator.id} is frozen`);
+        throw new ValidationError('Creator is not available for tips at this time');
+      }
+
       // Create tip in pending state
       const tip = await this.prisma.tip.create({
         data: {
