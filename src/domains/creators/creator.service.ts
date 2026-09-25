@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { CreateCreatorRequest, UpdateCreatorRequest } from './creator.types';
 import { ValidationError } from '../../utils/errors';
+import { getOrFetch, invalidate, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
 
 export class CreatorService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -50,47 +51,63 @@ export class CreatorService extends BaseService {
 
   async getCreatorByUsername(username: string): Promise<any> {
     return this.executeWithLogging('creator.getByUsername', async () => {
-      const creator = await this.prisma.creator.findUnique({
-        where: { username },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
+      const cacheKey = createCacheKey(CacheType.CREATOR, `username:${username}`);
+
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.CREATOR,
+        fetchFn: async () => {
+          const creator = await this.prisma.creator.findUnique({
+            where: { username },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  name: true,
+                },
+              },
             },
-          },
+          });
+
+          if (!creator) {
+            throw new ValidationError('Creator not found');
+          }
+
+          return creator;
         },
       });
-
-      if (!creator) {
-        throw new ValidationError('Creator not found');
-      }
-
-      return creator;
     });
   }
 
   async getCreatorById(creatorId: string): Promise<any> {
     return this.executeWithLogging('creator.getById', async () => {
-      const creator = await this.prisma.creator.findUnique({
-        where: { id: creatorId },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
+      const cacheKey = createCacheKey(CacheType.CREATOR, creatorId);
+
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.CREATOR,
+        fetchFn: async () => {
+          const creator = await this.prisma.creator.findUnique({
+            where: { id: creatorId },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  name: true,
+                },
+              },
             },
-          },
+          });
+
+          if (!creator) {
+            throw new ValidationError('Creator not found');
+          }
+
+          return creator;
         },
       });
-
-      if (!creator) {
-        throw new ValidationError('Creator not found');
-      }
-
-      return creator;
     });
   }
 
@@ -104,7 +121,25 @@ export class CreatorService extends BaseService {
           avatar: data.avatar,
           isPublic: data.isPublic,
         },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true,
+            },
+          },
+        },
       });
+
+      // Update cache for both ID and username
+      const idCacheKey = createCacheKey(CacheType.CREATOR, creatorId);
+      await update(idCacheKey, creator, CacheType.CREATOR);
+
+      if (creator.username) {
+        const usernameCacheKey = createCacheKey(CacheType.CREATOR, `username:${creator.username}`);
+        await update(usernameCacheKey, creator, CacheType.CREATOR);
+      }
 
       return creator;
     });
@@ -112,15 +147,23 @@ export class CreatorService extends BaseService {
 
   async getCreatorByUserId(userId: string): Promise<any> {
     return this.executeWithLogging('creator.getByUserId', async () => {
-      const creator = await this.prisma.creator.findUnique({
-        where: { userId },
+      const cacheKey = createCacheKey(CacheType.CREATOR, `userId:${userId}`);
+
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.CREATOR,
+        fetchFn: async () => {
+          const creator = await this.prisma.creator.findUnique({
+            where: { userId },
+          });
+
+          if (!creator) {
+            throw new ValidationError('Creator profile not found');
+          }
+
+          return creator;
+        },
       });
-
-      if (!creator) {
-        throw new ValidationError('Creator profile not found');
-      }
-
-      return creator;
     });
   }
 
