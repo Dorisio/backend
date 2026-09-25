@@ -97,6 +97,17 @@ model BlacklistedToken {
   @@index([expiresAt])
 }
 
+// Tracks revoked/rotated refresh tokens by their JWT id (jti) so that a
+// leaked or already-used refresh token cannot be replayed.
+model BlacklistedRefreshToken {
+  id        String   @id @default(cuid())
+  jti       String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 model Webhook {
   id        String   @id @default(cuid())
   creatorId String
