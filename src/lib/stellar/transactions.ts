@@ -1,6 +1,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getStellarClient } from './client';
 import { logger } from '../../utils/logger';
+import { CircuitBreakerOpenError } from '../circuit-breaker';
 
 export interface PaymentTransactionData {
   senderPublicKey: string;
@@ -302,11 +303,17 @@ export async function submitSignedTransaction(
  * Check transaction status on the network
  * Polls Horizon to see if transaction has been confirmed
  *
+ * Graceful degradation: when the Horizon circuit breaker is OPEN, this
+ * returns `confirmed: false` with `circuitOpen: true` rather than throwing,
+ * so confirmation polling can retry later instead of cascading the failure
+ * to callers (tips remain pending until the circuit recovers).
+ *
  * @param transactionHash Transaction hash to check
  * @returns Confirmation status and transaction details if available
  */
 export async function checkTransactionStatus(transactionHash: string): Promise<{
   confirmed: boolean;
+  circuitOpen?: boolean;
   ledger?: number;
   timestamp?: string;
   result?: any;
@@ -322,6 +329,16 @@ export async function checkTransactionStatus(transactionHash: string): Promise<{
       result: transaction,
     };
   } catch (error: any) {
+    if (error instanceof CircuitBreakerOpenError) {
+      logger.warn(
+        `Horizon circuit breaker OPEN - deferring confirmation check for ${transactionHash}`
+      );
+      return {
+        confirmed: false,
+        circuitOpen: true,
+      };
+    }
+
     if (error.message && error.message.includes('not yet confirmed')) {
       logger.debug(`Transaction not yet confirmed: ${transactionHash}`);
       return {

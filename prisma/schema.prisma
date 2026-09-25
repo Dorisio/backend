@@ -20,6 +20,9 @@ model User {
   creator   Creator?
   wallets   Wallet[]
   tips      Tip[]
+
+  @@index([role])
+  @@index([createdAt])
 }
 
 model Creator {
@@ -75,7 +78,7 @@ model Tip {
   message   String?
   
   status    String   @default("pending")
-  transactionHash String?
+  transactionHash String? @unique
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -139,6 +142,8 @@ model WebhookEvent {
   
   @@index([webhookId])
   @@index([status])
+  @@index([webhookId, status])
+  @@index([createdAt])
 }
 
 model WalletFlag {

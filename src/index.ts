@@ -1,5 +1,4 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
-import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import { config } from './config/env';
 import { applyJsonSerializer } from './config/serialization';
@@ -7,6 +6,7 @@ import { AppError } from './utils/errors';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
+import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
@@ -17,8 +17,12 @@ import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import redisPool, { startRedisHealthCheck } from './lib/redisPool';
-import cache from './lib/cache';
 import { setServiceState } from './services/health.service';
+import { registerSecurityPlugins } from './plugins/security';
+import { registerGraphQL } from './graphql/plugin';
+import { registerJobRoutes } from './domains/jobs/jobs.routes';
+import { startWorkers } from './lib/workers/index';
+import { closeQueues } from './lib/queue';
 
 const app = Fastify({
   logger: {
@@ -86,6 +90,9 @@ app.get('/health', async (_request, _reply) => {
       },
       redis: {
         status: (redisPool && (redisPool.size ?? 0) > 0) ? 'healthy' : 'degraded',
+      },
+      external_services: {
+        circuit_breakers: getExternalBreakerSnapshots(),
       },
       memory: {
         status: 'healthy',
@@ -155,8 +162,28 @@ process.on('SIGINT', () => {
   void shutdown('SIGINT');
 });
 
+const bootstrap = async (): Promise<void> => {
+  await registerSecurityPlugins(app);
+  await app.register(cookie);
+
+  registerAuthRoutes(app, prisma);
+  registerWalletRoutes(app, prisma);
+  registerPaymentRoutes(app, prisma);
+  registerUserRoutes(app, prisma);
+  registerCreatorPayoutRoutes(app, prisma);
+  registerWebhookRoutes(app, prisma);
+  registerAnalyticsRoutes(app, prisma);
+  registerAdminRoutes(app, prisma);
+  registerMetricsRoute(app, prisma);
+  registerJobRoutes(app);
+
+  await registerGraphQL(app, prisma);
+};
+
 const start = async (): Promise<void> => {
   try {
+    await bootstrap();
+
     if (config.DATABASE_URL) {
       try {
         await initializeDatabase();
@@ -165,13 +192,11 @@ const start = async (): Promise<void> => {
       }
     }
 
-    // Start Redis health check
     startRedisHealthCheck();
 
-    // Initialize cache warming (non-blocking)
-    if (config.DATABASE_URL) {
-      initializeCacheWarming(prisma).catch((err) => {
-        app.log.warn({ err }, 'Cache warming failed, continuing startup');
+    if (config.ENABLE_WORKERS) {
+      startWorkers().catch((err) => {
+        app.log.error({ err }, 'Failed to start background workers');
       });
     }
 
@@ -189,6 +214,7 @@ const handleShutdown = async (signal: string): Promise<void> => {
     await app.close();
     await closeDatabase();
     await prisma.$disconnect();
+    await closeQueues().catch(() => undefined);
     app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
