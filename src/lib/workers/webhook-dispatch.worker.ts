@@ -4,6 +4,7 @@ import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
+import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
 import crypto from 'crypto';
 
 const redis = createClient({
@@ -32,15 +33,41 @@ export const webhookDispatchWorker = new Worker(
         .update(JSON.stringify(payload))
         .digest('hex');
 
-      const response = await axios.post(webhook.url, payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Dorisio-Signature': `sha256=${signature}`,
-          'X-Dorisio-Event': eventType,
-          'X-Dorisio-Delivery-Id': job.id,
-        },
-        timeout: 30000,
-      });
+      // Deliver through the per-endpoint circuit breaker so a repeatedly
+      // failing webhook endpoint is skipped (fails fast) until it recovers,
+      // instead of consuming a full retry budget on every job.
+      let response;
+      try {
+        response = await executeWithBreaker(`webhook:${webhook.url}`, () =>
+          axios.post(webhook.url, payload, {
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Dorisio-Signature': `sha256=${signature}`,
+              'X-Dorisio-Event': eventType,
+              'X-Dorisio-Delivery-Id': job.id,
+            },
+            timeout: 30000,
+          })
+        );
+      } catch (deliveryError) {
+        if (deliveryError instanceof CircuitBreakerOpenError) {
+          // Circuit open: mark as pending without consuming an attempt so
+          // the job can be retried once the endpoint recovers.
+          await prisma.webhookEvent.update({
+            where: { id: job.data.eventId },
+            data: {
+              status: 'pending',
+              lastError: 'Circuit breaker open - delivery deferred',
+              updatedAt: new Date(),
+            },
+          });
+          logger.warn(
+            `Webhook ${webhookId} delivery deferred: circuit breaker open for ${webhook.url}`
+          );
+          return { success: false, webhookId, deferred: true };
+        }
+        throw deliveryError;
+      }
 
       // Track successful dispatch
       await prisma.webhookEvent.update({

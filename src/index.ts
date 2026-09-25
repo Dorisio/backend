@@ -5,6 +5,7 @@ import { config } from './config/env';
 import { AppError } from './utils/errors';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
+import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
@@ -15,8 +16,8 @@ import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import redisPool, { startRedisHealthCheck } from './lib/redisPool';
-import cache from './lib/cache';
 import { setServiceState } from './services/health.service';
+import { initializeCacheWarming } from './lib/cache/cache-warming';
 
 const app = Fastify({
   logger: {
@@ -77,6 +78,9 @@ app.get('/health', async (_request, _reply) => {
       },
       redis: {
         status: (redisPool && (redisPool.size ?? 0) > 0) ? 'healthy' : 'degraded',
+      },
+      external_services: {
+        circuit_breakers: getExternalBreakerSnapshots(),
       },
       memory: {
         status: 'healthy',

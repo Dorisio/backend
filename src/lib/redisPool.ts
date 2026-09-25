@@ -60,7 +60,7 @@ export function startRedisHealthCheck() {
 
 export function stopRedisHealthCheck() {
   if (!healthTimer) return;
-  clearInterval(healthTimer as unknown as NodeJS.Timeout);
+  clearInterval(healthTimer);
   healthTimer = null;
 }
 

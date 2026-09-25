@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { getMetricsText, updateMetrics } from '../lib/metrics';
 import { getPoolMetrics, getCircuitBreaker } from '../db';
+import { getCircuitBreakerSnapshots, syncCircuitBreakerMetrics } from '../lib/circuit-breaker';
 
 export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient): void => {
   // GET /metrics - Prometheus metrics endpoint
@@ -19,9 +20,10 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
     },
     async (_request, reply) => {
       try {
-        // Update metrics from database
+        // Update metrics from database + external-service circuit breakers
         await updateMetrics(prisma);
         getPoolMetrics();
+        syncCircuitBreakerMetrics();
 
         const metrics = await getMetricsText();
         reply.type('text/plain; charset=utf-8').send(metrics);
@@ -51,6 +53,7 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
         await updateMetrics(prisma);
         const poolMetrics = getPoolMetrics();
         const cbMetrics = getCircuitBreaker().getMetrics();
+        const externalBreakers = getCircuitBreakerSnapshots();
 
         // Get current metric values
         const [pendingTips, confirmedTips, users, creators, totalEarnings] = await Promise.all([
@@ -79,6 +82,9 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
             idle_connections: poolMetrics.idleCount,
             waiting_clients: poolMetrics.waitingCount,
             circuit_breaker: cbMetrics,
+          },
+          external_services: {
+            circuit_breakers: externalBreakers,
           },
           application: {
             pending_tips: pendingTips,
