@@ -7,6 +7,9 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3000'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  // Max time (ms) to wait for in-flight requests to drain and resources to
+  // close on SIGTERM/SIGINT before forcing exit (#23).
+  SHUTDOWN_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   DATABASE_URL: z.string().optional(),
   DB_POOL_MIN: z.string().transform(Number).default('2'),
   DB_POOL_MAX: z.string().transform(Number).default('20'),
@@ -75,6 +78,12 @@ const EnvSchema = z.object({
   STELLAR_SERVER_SECRET_KEY: z.string().optional(),
   USDC_CONTRACT_ID: z.string().optional(),
   USDC_ISSUER: z.string().optional(),
+  // External payment processing
+  PAYMENTS_PROVIDER: z.enum(['stripe', 'none']).default('none'),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
+  PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
   // Issue #28 — CORS
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:5173'),

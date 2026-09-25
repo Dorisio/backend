@@ -3,6 +3,7 @@ import { verifyToken } from '../utils/jwt';
 import { UnauthorizedError } from '../utils/errors';
 import { isTokenBlacklisted } from '../utils/token-blacklist';
 import { config } from '../config';
+import { setRequestContextUserId } from '../lib/requestContext';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -57,6 +58,10 @@ export const authMiddleware = async (
 
     const payload = verifyToken(token);
     request.user = payload;
+    // So every log line for the rest of this request — including from
+    // code that only has access to the module-level `logger`, not
+    // `request` — carries userId too (#26).
+    setRequestContextUserId(payload.userId);
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       throw error;

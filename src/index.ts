@@ -13,6 +13,7 @@ import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
+import { registerChargeRoutes } from './domains/payments/charge.routes';
 import { registerUserRoutes } from './domains/users/user.routes';
 import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
@@ -26,6 +27,8 @@ import { registerGraphQL } from './graphql/plugin';
 import { registerJobRoutes } from './domains/jobs/jobs.routes';
 import { startWorkers } from './lib/workers/index';
 import { closeQueues } from './lib/queue';
+import { registerApiVersioning } from './plugins/apiVersion';
+import { registerRequestLogging } from './plugins/requestLogging';
 
 const app = Fastify({
   logger: {
@@ -59,6 +62,7 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
+registerChargeRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint
@@ -124,10 +128,19 @@ app.addHook('onReady', async () => {
   setServiceState('ready');
 });
 
-// Graceful shutdown: flip readiness to `shutting_down` first so the
+// Graceful shutdown (#23): flip readiness to `shutting_down` first so the
 // readiness probe starts failing immediately (giving the load balancer a
-// chance to drain traffic away from this instance), then close the
-// Fastify server and its dependencies before the process exits.
+// chance to stop routing new traffic to this instance), then drain and
+// close everything in order: (1) stop accepting new connections and let
+// in-flight requests finish (Fastify's own close()), (2) close the job
+// queues (Redis + BullMQ), (3) close the database connection pool. A hard
+// timeout forces exit if any step hangs, so a stuck close() can't leave
+// the process running forever under an orchestrator expecting it to stop.
+//
+// This replaces two separate, competing SIGTERM/SIGINT handlers that used
+// to be registered here — both fired on the same signal, both raced to
+// call `process.exit()`, and neither called `closeQueues()`, so pending
+// BullMQ jobs and their Redis connections were never drained.
 let shuttingDown = false;
 
 const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
@@ -137,11 +150,34 @@ const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
   app.log.info(`Received ${signal}, starting graceful shutdown`);
   setServiceState('shutting_down');
 
+  const forceExitTimer = setTimeout(() => {
+    app.log.error(
+      `Graceful shutdown did not complete within ${config.SHUTDOWN_TIMEOUT_MS}ms, forcing exit`
+    );
+    process.exit(1);
+  }, config.SHUTDOWN_TIMEOUT_MS);
+  forceExitTimer.unref();
+
   try {
+    // Stops accepting new connections and resolves once in-flight
+    // requests have completed (bounded by Fastify's own close semantics;
+    // the forceExitTimer above is the outer safety net for this whole
+    // sequence, including this step).
     await app.close();
+    app.log.info('HTTP server closed, in-flight requests drained');
+
+    await closeQueues();
+    app.log.info('Job queues closed');
+
+    await closeDatabase();
     await prisma.$disconnect();
+    app.log.info('Database connections closed');
+
+    clearTimeout(forceExitTimer);
+    app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
+    clearTimeout(forceExitTimer);
     app.log.error(err, 'Error during graceful shutdown');
     process.exit(1);
   }
@@ -157,6 +193,12 @@ process.on('SIGINT', () => {
 const bootstrap = async (): Promise<void> => {
   await registerSecurityPlugins(app);
   await app.register(cookie);
+
+  // API versioning (#25): validates an optional API-Version header against
+  // SUPPORTED_API_VERSIONS and records per-version usage metrics. Existing
+  // /api/v1/... paths are untouched — this only adds header validation and
+  // observability.
+  registerApiVersioning(app);
 
   registerAuthRoutes(app, prisma);
   registerWalletRoutes(app, prisma);
