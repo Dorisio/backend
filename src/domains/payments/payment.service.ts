@@ -22,6 +22,7 @@ import {
   parseSortParameters,
 } from '../../utils/pagination';
 import { paginateWithCursor } from '../../db/pagination';
+import { buildTipMemo, validateMemo, validatePaymentAmount } from '../../lib/stellar/validation';
 
 export class PaymentService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -37,9 +38,11 @@ export class PaymentService extends BaseService {
    */
   async createTip(userId: string, data: CreateTipRequest): Promise<TipResponse> {
     return this.executeWithLogging('payment.createTip', async () => {
-      // Validate amount
-      if (data.amount <= 0) {
-        throw new ValidationError('Amount must be greater than 0');
+      // Validate amount at the service boundary as well, so callers that bypass
+      // the route layer (jobs, internal tooling) cannot create bad records.
+      const amountCheck = validatePaymentAmount(data.amount);
+      if (!amountCheck.valid) {
+        throw new ValidationError(amountCheck.reason || 'Amount must be greater than 0');
       }
 
       // Verify creator exists, is public, and is verified
@@ -575,6 +578,14 @@ export class PaymentService extends BaseService {
         throw new UnauthorizedError('Wallet does not match tip sender');
       }
 
+      // Stellar memos are capped at 28 bytes. Build (and verify) the memo before
+      // touching the network so we fail fast with a clear error.
+      const memo = buildTipMemo(tipId);
+      const memoCheck = validateMemo(memo);
+      if (!memoCheck.valid) {
+        throw new ValidationError(memoCheck.reason || 'Invalid transaction memo');
+      }
+
       try {
         // Build transaction
         const transactionBuilder = await buildPaymentTransaction({
@@ -583,7 +594,7 @@ export class PaymentService extends BaseService {
           amount,
           assetCode,
           assetIssuer,
-          memo: `tip-${tipId}`,
+          memo,
         });
 
         const transaction = transactionBuilder.build();

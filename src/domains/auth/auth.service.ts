@@ -7,7 +7,9 @@ import { hashPassword, comparePasswords } from '../../utils/password';
 import { blacklistRefreshToken } from '../../utils/token-blacklist';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
-import { randomUUID } from 'node:crypto';
+import { randomUUID } from 'crypto';
+
+const uuidv4 = (): string => randomUUID();
 
 export class AuthService extends BaseService {
   constructor(private prisma: PrismaClient) {

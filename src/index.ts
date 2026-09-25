@@ -4,9 +4,7 @@ import cors from '@fastify/cors';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
-import { swaggerConfig } from './config/swagger';
-import { requestDurationHistogram } from './lib/metrics';
-import { runWithRequestId } from './utils/request-context';
+import { applyJsonSerializer } from './config/serialization';
 import { AppError } from './utils/errors';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
@@ -47,8 +45,6 @@ const prisma = new PrismaClient();
 applyJsonSerializer(app);
 
 // Register plugins
-app.register(swagger, { swagger: swaggerConfig.swagger as any });
-app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list' } });
 app.register(cors, {
   origin: true,
   credentials: true,
@@ -59,31 +55,6 @@ app.register(cookie, {
   secret: config.JWT_SECRET,
 });
 
-app.addHook('onSend', async (request, reply, payload) => {
-  reply.header('x-request-id', request.id);
-  return payload;
-});
-
-const requestStartTimes = new WeakMap<object, number>();
-app.addHook('onRequest', (request, _reply, done) => {
-  requestStartTimes.set(request, performance.now());
-  runWithRequestId(request.id, done);
-});
-app.addHook('onResponse', (request, reply, done) => {
-  const startedAt = requestStartTimes.get(request);
-  if (startedAt !== undefined) {
-    requestDurationHistogram.observe({
-      method: request.method,
-      route: request.routeOptions.url ?? 'unmatched',
-      status: String(reply.statusCode),
-    }, (performance.now() - startedAt) / 1000);
-    requestStartTimes.delete(request);
-  }
-  done();
-});
-
-app.get('/api-spec.json', async () => app.swagger());
-
 // Register routes
 registerAuthRoutes(app, prisma);
 registerWalletRoutes(app, prisma);
@@ -93,7 +64,6 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
-registerNotificationRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint
