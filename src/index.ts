@@ -5,8 +5,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
 import { applyJsonSerializer } from './config/serialization';
-import { swaggerConfig } from './config/swagger';
-import { globalErrorHandler, notFoundHandler } from './middleware/error-handler';
+import { AppError } from './utils/errors';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
@@ -14,6 +13,7 @@ import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
+import { registerChargeRoutes } from './domains/payments/charge.routes';
 import { registerUserRoutes } from './domains/users/user.routes';
 import { registerCreatorPayoutRoutes } from './domains/creators/payout.routes';
 import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
@@ -51,12 +51,6 @@ app.register(cookie, {
   secret: config.JWT_SECRET,
 });
 
-// OpenAPI documentation is generated from the registered route schemas and is
-// served at /docs, giving clients a single place to discover endpoints and the
-// standardized error contract.
-app.register(swagger, { openapi: swaggerConfig.openapi });
-app.register(swaggerUi, swaggerConfig.uiConfig);
-
 // Register routes
 registerAuthRoutes(app, prisma);
 registerWalletRoutes(app, prisma);
@@ -66,6 +60,7 @@ registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
+registerChargeRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
 
 // Health check endpoint
