@@ -16,6 +16,12 @@ import {
 } from '../../lib/stellar/transactions';
 import { logger } from '../../utils/logger';
 import { stellarConfirmationQueue } from '../../lib/queue';
+import {
+  sanitizePageSize,
+  sanitizePageNumber,
+  parseSortParameters,
+} from '../../utils/pagination';
+import { paginateWithCursor } from '../../db/pagination';
 
 export class PaymentService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -113,17 +119,25 @@ export class PaymentService extends BaseService {
   }
 
   /**
-   * List tips received by a creator with pagination
+   * List tips received by a creator with offset pagination, multi-column sorting, and filtering
    */
   async listTips(
     creatorId: string,
     page: number = 1,
-    pageSize: number = 10
+    pageSize: number = 20,
+    options: {
+      status?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+    } = {}
   ): Promise<{
     tips: TipResponse[];
     total: number;
     page: number;
     pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
   }> {
     return this.executeWithLogging('payment.listTips', async () => {
       // Verify creator exists
@@ -136,83 +150,207 @@ export class PaymentService extends BaseService {
       }
 
       // Validate pagination
-      if (page < 1 || pageSize < 1 || pageSize > 100) {
-        throw new ValidationError('Invalid pagination parameters');
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, 20);
+
+      const where: any = { creatorId };
+      if (options.status) {
+        where.status = options.status;
       }
 
-      const skip = (page - 1) * pageSize;
+      const sortFields = parseSortParameters(
+        options.sortBy,
+        options.sortOrder,
+        ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+        'createdAt',
+        'desc'
+      );
+
+      const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
+      const skip = (safePage - 1) * safePageSize;
 
       const [tips, total] = await Promise.all([
         this.prisma.tip.findMany({
-          where: {
-            creatorId,
-          },
+          where,
           skip,
-          take: pageSize,
-          orderBy: {
-            createdAt: 'desc',
-          },
+          take: safePageSize,
+          orderBy,
         }),
-        this.prisma.tip.count({
-          where: {
-            creatorId,
-          },
-        }),
+        this.prisma.tip.count({ where }),
       ]);
+
+      const totalPages = Math.ceil(total / safePageSize);
 
       return {
         tips: tips.map((tip) => this.formatTipResponse(tip)),
         total,
-        page,
-        pageSize,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
       };
     });
   }
 
   /**
-   * Get tip history for a user (tips they sent)
+   * List tips received by a creator with cursor-based pagination
+   */
+  async listTipsCursor(
+    creatorId: string,
+    params: {
+      limit?: number;
+      cursor?: string;
+      after?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+      status?: string;
+    } = {}
+  ) {
+    return this.executeWithLogging('payment.listTipsCursor', async () => {
+      const creator = await this.prisma.creator.findUnique({
+        where: { id: creatorId },
+      });
+
+      if (!creator) {
+        throw new NotFoundError('Creator');
+      }
+
+      const where: any = { creatorId };
+      if (params.status) {
+        where.status = params.status;
+      }
+
+      const result = await paginateWithCursor(
+        this.prisma.tip,
+        {
+          limit: params.limit,
+          after: params.after || params.cursor,
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+        },
+        {
+          where,
+          allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+          defaultSortField: 'createdAt',
+          defaultSortDirection: 'desc',
+        }
+      );
+
+      return {
+        ...result,
+        items: result.items.map((tip) => this.formatTipResponse(tip)),
+        data: result.data.map((tip) => this.formatTipResponse(tip)),
+      };
+    });
+  }
+
+  /**
+   * Get tip history for a user (tips they sent) with offset pagination, sorting, and filtering
    */
   async getUserTipHistory(
     userId: string,
     page: number = 1,
-    pageSize: number = 10
+    pageSize: number = 20,
+    options: {
+      status?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+    } = {}
   ): Promise<{
     tips: TipResponse[];
     total: number;
     page: number;
     pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
   }> {
     return this.executeWithLogging('payment.getUserTipHistory', async () => {
       // Validate pagination
-      if (page < 1 || pageSize < 1 || pageSize > 100) {
-        throw new ValidationError('Invalid pagination parameters');
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, 20);
+
+      const where: any = { fromUserId: userId };
+      if (options.status) {
+        where.status = options.status;
       }
 
-      const skip = (page - 1) * pageSize;
+      const sortFields = parseSortParameters(
+        options.sortBy,
+        options.sortOrder,
+        ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+        'createdAt',
+        'desc'
+      );
+
+      const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
+      const skip = (safePage - 1) * safePageSize;
 
       const [tips, total] = await Promise.all([
         this.prisma.tip.findMany({
-          where: {
-            fromUserId: userId,
-          },
+          where,
           skip,
-          take: pageSize,
-          orderBy: {
-            createdAt: 'desc',
-          },
+          take: safePageSize,
+          orderBy,
         }),
-        this.prisma.tip.count({
-          where: {
-            fromUserId: userId,
-          },
-        }),
+        this.prisma.tip.count({ where }),
       ]);
+
+      const totalPages = Math.ceil(total / safePageSize);
 
       return {
         tips: tips.map((tip) => this.formatTipResponse(tip)),
         total,
-        page,
-        pageSize,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
+      };
+    });
+  }
+
+  /**
+   * Get tip history for a user with cursor pagination
+   */
+  async getUserTipHistoryCursor(
+    userId: string,
+    params: {
+      limit?: number;
+      cursor?: string;
+      after?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+      status?: string;
+    } = {}
+  ) {
+    return this.executeWithLogging('payment.getUserTipHistoryCursor', async () => {
+      const where: any = { fromUserId: userId };
+      if (params.status) {
+        where.status = params.status;
+      }
+
+      const result = await paginateWithCursor(
+        this.prisma.tip,
+        {
+          limit: params.limit,
+          after: params.after || params.cursor,
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+        },
+        {
+          where,
+          allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+          defaultSortField: 'createdAt',
+          defaultSortDirection: 'desc',
+        }
+      );
+
+      return {
+        ...result,
+        items: result.items.map((tip) => this.formatTipResponse(tip)),
+        data: result.data.map((tip) => this.formatTipResponse(tip)),
       };
     });
   }

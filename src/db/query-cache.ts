@@ -31,7 +31,7 @@ export class QueryCache {
   private readonly maxEntries: number;
 
   constructor(options: QueryCacheOptions = {}) {
-    this.defaultTtlMs = options.defaultTtlMs ?? 300000; // 5 min default
+    this.defaultTtlMs = options.defaultTtlMs ?? 60000; // 60s default
     this.maxEntries = options.maxEntries ?? 1000;
   }
 
@@ -172,5 +172,3 @@ export class QueryCache {
     }
   }
 }
-
-export const queryCache = new QueryCache();

@@ -5,6 +5,4 @@ export * from './query-cache';
 export * from './query-optimizer';
 export * from './metrics';
 export * from './migrations';
-export * from './views';
-export * from './pagination';
-export * from './profiler';
+export * from './migrationDefinitions';

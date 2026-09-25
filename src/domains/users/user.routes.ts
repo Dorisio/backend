@@ -157,7 +157,7 @@ export const registerUserRoutes = (app: FastifyInstance, prisma: PrismaClient): 
   );
 
   // GET /api/v1/users/transaction-history - Get user transaction history
-  app.get<{ Querystring: { page?: string; pageSize?: string } }>(
+  app.get<{ Querystring: { page?: string; pageSize?: string; limit?: string } }>(
     '/api/v1/users/transaction-history',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -168,14 +168,16 @@ export const registerUserRoutes = (app: FastifyInstance, prisma: PrismaClient): 
           throw new Error('User not found in request');
         }
 
-        const query = request.query as { page?: string; pageSize?: string };
+        const query = request.query as { page?: string; pageSize?: string; limit?: string };
         const page = query.page ? parseInt(query.page) : 1;
-        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
 
         const result = await userService.getUserTransactionHistory(user.userId, page, pageSize);
         reply.send(formatSuccess(result));
       } catch (error) {
-        if (error instanceof AppError) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
         } else {
           throw error;

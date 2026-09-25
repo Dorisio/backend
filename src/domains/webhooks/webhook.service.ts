@@ -148,12 +148,17 @@ export class WebhookService extends BaseService {
   /**
    * Get webhook delivery history
    */
+  /**
+   * Get webhook delivery history with pagination and status filtering
+   */
   async getDeliveryHistory(
     webhookId: string,
     creatorId: string,
-    limit = 50
-  ): Promise<
-    {
+    page: number = 1,
+    pageSize: number = 20,
+    status?: string
+  ): Promise<{
+    events: {
       id: string;
       eventType: string;
       status: string;
@@ -161,9 +166,17 @@ export class WebhookService extends BaseService {
       lastError?: string;
       createdAt: string;
       updatedAt: string;
-    }[]
-  > {
+    }[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  }> {
     return this.executeWithLogging('webhook.history', async () => {
+      const { sanitizePageNumber, sanitizePageSize } = await import('../../utils/pagination');
+
       const webhook = await this.prisma.webhook.findUnique({
         where: { id: webhookId },
       });
@@ -172,13 +185,26 @@ export class WebhookService extends BaseService {
         throw new ValidationError('Unauthorized');
       }
 
-      const events = await this.prisma.webhookEvent.findMany({
-        where: { webhookId },
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-      });
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, 20);
+      const skip = (safePage - 1) * safePageSize;
 
-      return events.map((e) => ({
+      const where: any = { webhookId };
+      if (status) {
+        where.status = status;
+      }
+
+      const [events, total] = await Promise.all([
+        this.prisma.webhookEvent.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: safePageSize,
+        }),
+        this.prisma.webhookEvent.count({ where }),
+      ]);
+
+      const formattedEvents = events.map((e) => ({
         id: e.id,
         eventType: e.eventType,
         status: e.status,
@@ -187,6 +213,18 @@ export class WebhookService extends BaseService {
         createdAt: e.createdAt.toISOString(),
         updatedAt: e.updatedAt.toISOString(),
       }));
+
+      const totalPages = Math.ceil(total / safePageSize);
+
+      return {
+        events: formattedEvents,
+        total,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
+      };
     });
   }
 

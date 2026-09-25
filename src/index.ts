@@ -1,9 +1,10 @@
 import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
-import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import { config } from './config/env';
 import { AppError } from './utils/errors';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
+import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
 import { registerPaymentRoutes } from './domains/payments/payment.routes';
@@ -13,6 +14,13 @@ import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
+import redisPool, { startRedisHealthCheck } from './lib/redisPool';
+import { setServiceState } from './services/health.service';
+import { registerSecurityPlugins } from './plugins/security';
+import { registerGraphQL } from './graphql/plugin';
+import { registerJobRoutes } from './domains/jobs/jobs.routes';
+import { startWorkers } from './lib/workers/index';
+import { closeQueues } from './lib/queue';
 
 const app = Fastify({
   logger: {
@@ -23,22 +31,8 @@ const app = Fastify({
 // Initialize Prisma
 const prisma = new PrismaClient();
 
-// Register plugins
-app.register(cors, {
-  origin: true,
-  credentials: true,
-});
-
-// Register routes
-registerAuthRoutes(app, prisma);
-registerWalletRoutes(app, prisma);
-registerPaymentRoutes(app, prisma);
-registerUserRoutes(app, prisma);
-registerCreatorPayoutRoutes(app, prisma);
-registerWebhookRoutes(app, prisma);
-registerAnalyticsRoutes(app, prisma);
-registerAdminRoutes(app, prisma);
-registerMetricsRoute(app, prisma);
+// Plugins + routes are registered inside `bootstrap()` so async security /
+// GraphQL plugins finish before the server accepts traffic.
 
 // Health check endpoint
 app.get('/health', async (_request, _reply) => {
@@ -69,6 +63,12 @@ app.get('/health', async (_request, _reply) => {
           failures: cb.getMetrics().failures,
           tripCount: cb.getMetrics().tripCount,
         },
+      },
+      redis: {
+        status: (redisPool && (redisPool.size ?? 0) > 0) ? 'healthy' : 'degraded',
+      },
+      external_services: {
+        circuit_breakers: getExternalBreakerSnapshots(),
       },
       memory: {
         status: 'healthy',
@@ -101,14 +101,79 @@ app.setErrorHandler(async (error, _request: FastifyRequest, reply: FastifyReply)
   });
 });
 
+// Service becomes "ready" only once Fastify has finished booting (all
+// plugins/routes registered) - readiness stays 503 until this fires, so
+// load balancers don't route traffic before the process can serve it.
+app.addHook('onReady', async () => {
+  setServiceState('ready');
+});
+
+// Graceful shutdown: flip readiness to `shutting_down` first so the
+// readiness probe starts failing immediately (giving the load balancer a
+// chance to drain traffic away from this instance), then close the
+// Fastify server and its dependencies before the process exits.
+let shuttingDown = false;
+
+const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  app.log.info(`Received ${signal}, starting graceful shutdown`);
+  setServiceState('shutting_down');
+
+  try {
+    await app.close();
+    await prisma.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    app.log.error(err, 'Error during graceful shutdown');
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+const bootstrap = async (): Promise<void> => {
+  await registerSecurityPlugins(app);
+  await app.register(cookie);
+
+  registerAuthRoutes(app, prisma);
+  registerWalletRoutes(app, prisma);
+  registerPaymentRoutes(app, prisma);
+  registerUserRoutes(app, prisma);
+  registerCreatorPayoutRoutes(app, prisma);
+  registerWebhookRoutes(app, prisma);
+  registerAnalyticsRoutes(app, prisma);
+  registerAdminRoutes(app, prisma);
+  registerMetricsRoute(app, prisma);
+  registerJobRoutes(app);
+
+  await registerGraphQL(app, prisma);
+};
+
 const start = async (): Promise<void> => {
   try {
+    await bootstrap();
+
     if (config.DATABASE_URL) {
       try {
         await initializeDatabase();
       } catch (dbErr) {
         app.log.warn({ dbErr }, 'Database pool initialization warning, continuing startup');
       }
+    }
+
+    startRedisHealthCheck();
+
+    if (config.ENABLE_WORKERS) {
+      startWorkers().catch((err) => {
+        app.log.error({ err }, 'Failed to start background workers');
+      });
     }
 
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
@@ -125,6 +190,7 @@ const handleShutdown = async (signal: string): Promise<void> => {
     await app.close();
     await closeDatabase();
     await prisma.$disconnect();
+    await closeQueues().catch(() => undefined);
     app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {

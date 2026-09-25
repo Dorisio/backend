@@ -121,7 +121,6 @@ describe('Database Connection Pool & Lifecycle', () => {
   it('should cache queries when useCache is enabled', async () => {
     await initializeDatabase();
     const dbPool = getDatabase();
-    (dbPool.query as any).mockClear();
 
     const res1 = await cachedQuery('SELECT * FROM "Settings" WHERE key = $1', ['app_name']);
     expect(res1.rows).toEqual([{ id: 1, val: 'query_res' }]);

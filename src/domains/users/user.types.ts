@@ -41,7 +41,12 @@ export interface UserTransactionHistoryResponse {
 
 export interface PaginatedTransactions {
   transactions: UserTransactionHistoryResponse[];
+  items?: UserTransactionHistoryResponse[];
+  data?: UserTransactionHistoryResponse[];
   total: number;
   page: number;
   pageSize: number;
+  totalPages?: number;
+  hasNext?: boolean;
+  hasPrev?: boolean;
 }

@@ -6,10 +6,9 @@ import {
   CircuitBreakerState,
   CircuitBreakerMetrics,
 } from './circuit-breaker';
-import { QueryLogger } from './query-logger';
+import { QueryLogger, QueryLogOptions } from './query-logger';
 import { QueryCache } from './query-cache';
 import { PreparedStatementConfig } from './query-optimizer';
-import { initializeDatabaseViews } from './views';
 import {
   dbPoolTotalConnections,
   dbPoolIdleConnections,
@@ -129,7 +128,7 @@ export const initializeDatabase = async (
   const statementTimeout =
     customConfig.statementTimeoutMs ?? config.DB_STATEMENT_TIMEOUT_MS ?? 10000;
   const slowThreshold =
-    customConfig.slowQueryThresholdMs ?? config.DB_SLOW_QUERY_THRESHOLD_MS ?? 100;
+    customConfig.slowQueryThresholdMs ?? config.DB_SLOW_QUERY_THRESHOLD_MS ?? 200;
   const logQueries =
     customConfig.logQueries ?? config.DB_LOG_QUERIES ?? false;
   leakDetectionTimeoutMs =
@@ -172,9 +171,10 @@ export const initializeDatabase = async (
     pool = new Pool(poolConfig);
 
     // Event listeners on pool
-    pool.on('error', (err: Error, _client: PoolClient) => {
+    pool.on('error', (err: Error, client: PoolClient) => {
       logger.error({ err }, 'Unexpected error on idle database client');
       dbQueryErrorsCounter.inc({ error_code: 'IDLE_CLIENT_ERROR' });
+      // Client is automatically discarded by pg.Pool upon error event
     });
 
     pool.on('connect', (_client: PoolClient) => {
@@ -210,13 +210,6 @@ export const initializeDatabase = async (
       );
     } finally {
       client.release();
-    }
-
-    // Initialize database views if connected
-    try {
-      await initializeDatabaseViews(pool);
-    } catch (viewErr) {
-      logger.warn({ viewErr }, 'Database views initialization warning');
     }
 
     return pool;
@@ -350,7 +343,7 @@ export const query = async <R extends QueryResultRow = any>(
       durationSec
     );
 
-    if (durationMs >= (config.DB_SLOW_QUERY_THRESHOLD_MS ?? 100)) {
+    if (durationMs >= (config.DB_SLOW_QUERY_THRESHOLD_MS ?? 200)) {
       dbSlowQueriesCounter.inc({ query_name: queryName ?? 'unnamed' });
     }
 

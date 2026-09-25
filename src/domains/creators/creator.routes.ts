@@ -8,6 +8,34 @@ import { authMiddleware } from '../../middleware/auth';
 export const registerCreatorRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const creatorService = new CreatorService(prisma);
 
+  // GET /api/v1/creators - List creators with pagination
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      limit?: string;
+      search?: string;
+      verifiedOnly?: string;
+      sortBy?: string;
+      sortOrder?: string;
+    };
+  }>(
+    '/api/v1/creators',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as Record<string, any>;
+      const page = query.page ? parseInt(query.page) : 1;
+      const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
+
+      const result = await creatorService.listCreators(page, pageSize, {
+        search: query.search,
+        verifiedOnly: query.verifiedOnly === 'true' || query.verifiedOnly === '1',
+        sortBy: query.sortBy,
+        sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
+      });
+      reply.send(formatSuccess(result));
+    }
+  );
+
   app.post<{ Body: any }>(
     '/api/v1/creators',
     { preHandler: authMiddleware },

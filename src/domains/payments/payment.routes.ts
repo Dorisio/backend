@@ -128,9 +128,21 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * GET /api/v1/transactions/history
    * Get user's tip history (tips they sent)
    * Requires: authenticated user
-   * Supports pagination: page (default 1), pageSize (default 10, max 100)
+   * Supports offset and cursor pagination (default pageSize: 20, max: 100), multi-column sorting, and status filtering
    */
-  app.get<{ Querystring: { page?: string; pageSize?: string } }>(
+  app.get<{
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      limit?: string;
+      cursor?: string;
+      after?: string;
+      first?: string;
+      sortBy?: string;
+      sortOrder?: string;
+      status?: string;
+    };
+  }>(
     '/api/v1/transactions/history',
     {
       preHandler: authMiddleware,
@@ -138,12 +150,19 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         querystring: {
           type: 'object',
           properties: {
-            page: { type: 'string', default: '1', description: 'Page number' },
-            pageSize: { type: 'string', default: '10', description: 'Items per page (max 100)' },
+            page: { type: 'string', default: '1', description: 'Page number (offset pagination)' },
+            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
+            limit: { type: 'string', description: 'Alias for pageSize / cursor limit (max 100)' },
+            cursor: { type: 'string', description: 'Opaque cursor for keyset pagination' },
+            after: { type: 'string', description: 'Opaque cursor after which to fetch results' },
+            first: { type: 'string', description: 'Number of items to fetch with cursor' },
+            sortBy: { type: 'string', description: 'Sort field(s) comma separated, e.g. createdAt,amount' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc', 'ASC', 'DESC'], description: 'Sort order' },
+            status: { type: 'string', description: 'Filter by tip status' },
           },
         },
         response: {
-          200: { description: 'User tip history with pagination' },
+          200: { description: 'User tip history with pagination metadata' },
           401: { description: 'Unauthorized' },
         },
       },
@@ -156,12 +175,31 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
           throw new Error('User not found in request');
         }
 
-        const query = request.query as { page?: string; pageSize?: string };
-        const page = query.page ? parseInt(query.page) : 1;
-        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
+        const query = request.query as Record<string, any>;
+        const isCursor = Boolean(query.cursor || query.after || query.first);
 
-        const result = await paymentService.getUserTipHistory(user.userId, page, pageSize);
-        reply.send(formatSuccess(result));
+        if (isCursor) {
+          const limit = query.first ? parseInt(query.first) : query.limit ? parseInt(query.limit) : query.pageSize ? parseInt(query.pageSize) : 20;
+          const result = await paymentService.getUserTipHistoryCursor(user.userId, {
+            limit,
+            cursor: query.cursor,
+            after: query.after,
+            sortBy: query.sortBy,
+            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
+            status: query.status,
+          });
+          reply.send(formatSuccess(result));
+        } else {
+          const page = query.page ? parseInt(query.page) : 1;
+          const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
+
+          const result = await paymentService.getUserTipHistory(user.userId, page, pageSize, {
+            sortBy: query.sortBy,
+            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
+            status: query.status,
+          });
+          reply.send(formatSuccess(result));
+        }
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));
@@ -178,9 +216,22 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * GET /api/v1/transactions/creator/:creatorId
    * Get tips received by a creator
    * Public endpoint (no auth required)
-   * Supports pagination: page (default 1), pageSize (default 10, max 100)
+   * Supports offset and cursor pagination (default pageSize: 20, max: 100), multi-column sorting, and status filtering
    */
-  app.get<{ Params: { creatorId: string }; Querystring: { page?: string; pageSize?: string } }>(
+  app.get<{
+    Params: { creatorId: string };
+    Querystring: {
+      page?: string;
+      pageSize?: string;
+      limit?: string;
+      cursor?: string;
+      after?: string;
+      first?: string;
+      sortBy?: string;
+      sortOrder?: string;
+      status?: string;
+    };
+  }>(
     '/api/v1/transactions/creator/:creatorId',
     {
       schema: {
@@ -193,24 +244,50 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         querystring: {
           type: 'object',
           properties: {
-            page: { type: 'string', default: '1', description: 'Page number' },
-            pageSize: { type: 'string', default: '10', description: 'Items per page (max 100)' },
+            page: { type: 'string', default: '1', description: 'Page number (offset pagination)' },
+            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
+            limit: { type: 'string', description: 'Alias for pageSize / cursor limit (max 100)' },
+            cursor: { type: 'string', description: 'Opaque cursor for keyset pagination' },
+            after: { type: 'string', description: 'Opaque cursor after which to fetch results' },
+            first: { type: 'string', description: 'Number of items to fetch with cursor' },
+            sortBy: { type: 'string', description: 'Sort field(s) comma separated, e.g. createdAt,amount' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc', 'ASC', 'DESC'], description: 'Sort order' },
+            status: { type: 'string', description: 'Filter by tip status' },
           },
         },
         response: {
-          200: { description: 'Tips received by creator' },
+          200: { description: 'Tips received by creator with pagination metadata' },
         },
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { creatorId } = request.params as { creatorId: string };
-        const query = request.query as { page?: string; pageSize?: string };
-        const page = query.page ? parseInt(query.page) : 1;
-        const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
+        const query = request.query as Record<string, any>;
+        const isCursor = Boolean(query.cursor || query.after || query.first);
 
-        const result = await paymentService.listTips(creatorId, page, pageSize);
-        reply.send(formatSuccess(result));
+        if (isCursor) {
+          const limit = query.first ? parseInt(query.first) : query.limit ? parseInt(query.limit) : query.pageSize ? parseInt(query.pageSize) : 20;
+          const result = await paymentService.listTipsCursor(creatorId, {
+            limit,
+            cursor: query.cursor,
+            after: query.after,
+            sortBy: query.sortBy,
+            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
+            status: query.status,
+          });
+          reply.send(formatSuccess(result));
+        } else {
+          const page = query.page ? parseInt(query.page) : 1;
+          const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
+
+          const result = await paymentService.listTips(creatorId, page, pageSize, {
+            sortBy: query.sortBy,
+            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
+            status: query.status,
+          });
+          reply.send(formatSuccess(result));
+        }
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));

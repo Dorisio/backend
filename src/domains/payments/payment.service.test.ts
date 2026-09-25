@@ -168,8 +168,8 @@ describe('PaymentService', () => {
     });
   });
 
-  describe('listTips', () => {
-    it('should list tips with pagination', async () => {
+  describe('listTips & listTipsCursor', () => {
+    it('should list tips with offset pagination and metadata', async () => {
       const creatorId = 'creator-123';
 
       mockPrisma.creator.findUnique.mockResolvedValue({
@@ -179,6 +179,8 @@ describe('PaymentService', () => {
       mockPrisma.tip.findMany.mockResolvedValue([
         {
           id: 'tip-1',
+          creatorId,
+          fromUserId: 'user-1',
           amount: 100,
           status: 'completed',
           createdAt: new Date(),
@@ -186,6 +188,8 @@ describe('PaymentService', () => {
         },
         {
           id: 'tip-2',
+          creatorId,
+          fromUserId: 'user-2',
           amount: 50,
           status: 'pending',
           createdAt: new Date(),
@@ -193,14 +197,94 @@ describe('PaymentService', () => {
         },
       ]);
 
-      mockPrisma.tip.count.mockResolvedValue(2);
+      mockPrisma.tip.count.mockResolvedValue(25);
 
-      const result = await paymentService.listTips(creatorId, 1, 10);
+      const result = await paymentService.listTips(creatorId, 1, 20, { status: 'completed' });
 
       expect(result.tips).toHaveLength(2);
-      expect(result.total).toBe(2);
+      expect(result.total).toBe(25);
       expect(result.page).toBe(1);
-      expect(result.pageSize).toBe(10);
+      expect(result.pageSize).toBe(20);
+      expect(result.totalPages).toBe(2);
+      expect(result.hasNext).toBe(true);
+      expect(result.hasPrev).toBe(false);
+      expect(mockPrisma.tip.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { creatorId, status: 'completed' },
+          skip: 0,
+          take: 20,
+        })
+      );
+    });
+
+    it('should list tips with cursor pagination', async () => {
+      const creatorId = 'creator-123';
+
+      mockPrisma.creator.findUnique.mockResolvedValue({
+        id: creatorId,
+      });
+
+      mockPrisma.tip.findMany.mockResolvedValue([
+        {
+          id: 'tip-1',
+          creatorId,
+          fromUserId: 'user-1',
+          amount: 100,
+          status: 'completed',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      const result = await paymentService.listTipsCursor(creatorId, { limit: 10 });
+      expect(result.items).toHaveLength(1);
+      expect(result.hasMore).toBe(false);
+      expect(result.pageInfo).toBeDefined();
+    });
+
+    it('should get user tip history with offset pagination', async () => {
+      const userId = 'user-123';
+
+      mockPrisma.tip.findMany.mockResolvedValue([
+        {
+          id: 'tip-1',
+          creatorId: 'c-1',
+          fromUserId: userId,
+          amount: 50,
+          status: 'completed',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      mockPrisma.tip.count.mockResolvedValue(1);
+
+      const result = await paymentService.getUserTipHistory(userId, 1, 20);
+
+      expect(result.tips).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.totalPages).toBe(1);
+    });
+
+    it('should get user tip history with cursor pagination', async () => {
+      const userId = 'user-123';
+
+      mockPrisma.tip.findMany.mockResolvedValue([
+        {
+          id: 'tip-1',
+          creatorId: 'c-1',
+          fromUserId: userId,
+          amount: 50,
+          status: 'completed',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
+
+      const result = await paymentService.getUserTipHistoryCursor(userId, { limit: 5 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.pageInfo).toBeDefined();
     });
   });
 

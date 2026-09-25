@@ -1,5 +1,4 @@
 import { logger } from '../utils/logger';
-import { queryProfiler } from './profiler';
 
 export interface QueryLogOptions {
   slowQueryThresholdMs?: number;
@@ -65,7 +64,7 @@ export class QueryLogger {
   private logQueries: boolean;
 
   constructor(options: QueryLogOptions = {}) {
-    this.slowQueryThresholdMs = options.slowQueryThresholdMs ?? 100;
+    this.slowQueryThresholdMs = options.slowQueryThresholdMs ?? 200;
     this.logQueries = options.logQueries ?? false;
   }
 
@@ -98,7 +97,6 @@ export class QueryLogger {
     }
 
     if (isSlow) {
-      queryProfiler.recordQueryExecution(queryName, cleanSql, safeParams, durationMs);
       logger.warn(
         {
           queryName: queryName ?? 'unnamed_query',

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   DatabaseCircuitBreaker,
+  DatabaseCircuitBreakerOpenError,
 } from '../circuit-breaker';
 
 describe('DatabaseCircuitBreaker', () => {

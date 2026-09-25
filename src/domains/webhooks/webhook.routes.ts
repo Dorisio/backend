@@ -154,7 +154,10 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
   );
 
   // GET /api/v1/webhooks/:id/history - Get delivery history
-  app.get<{ Params: { id: string } }>(
+  app.get<{
+    Params: { id: string };
+    Querystring: { page?: string; pageSize?: string; limit?: string; status?: string };
+  }>(
     '/api/v1/webhooks/:id/history',
     {
       preHandler: authMiddleware,
@@ -166,8 +169,17 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
             id: { type: 'string', description: 'Webhook ID' },
           },
         },
+        querystring: {
+          type: 'object',
+          properties: {
+            page: { type: 'string', default: '1', description: 'Page number' },
+            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
+            limit: { type: 'string', description: 'Alias for pageSize (max 100)' },
+            status: { type: 'string', description: 'Filter by delivery status' },
+          },
+        },
         response: {
-          200: { description: 'Delivery history' },
+          200: { description: 'Delivery history with pagination' },
           401: { description: 'Unauthorized' },
           404: { description: 'Webhook not found' },
         },
@@ -188,7 +200,11 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
         }
 
         const { id } = request.params as { id: string };
-        const result = await webhookService.getDeliveryHistory(id, creator.id);
+        const query = request.query as { page?: string; pageSize?: string; limit?: string; status?: string };
+        const page = query.page ? parseInt(query.page) : 1;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
+
+        const result = await webhookService.getDeliveryHistory(id, creator.id, page, pageSize, query.status);
         reply.send(formatSuccess(result));
       } catch (error) {
         if (error instanceof ValidationError) {

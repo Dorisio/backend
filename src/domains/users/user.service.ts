@@ -9,6 +9,7 @@ import {
   PaginatedTransactions,
 } from './user.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
+import { getOrFetch, invalidate, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
 
 export class UserService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -17,15 +18,23 @@ export class UserService extends BaseService {
 
   async getUserProfile(userId: string): Promise<UserProfileResponse> {
     return this.executeWithLogging('user.getProfile', async () => {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
+      const cacheKey = createCacheKey(CacheType.USER, userId);
+
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.USER,
+        fetchFn: async () => {
+          const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+          });
+
+          if (!user) {
+            throw new NotFoundError('User');
+          }
+
+          return this.formatUserProfile(user);
+        },
       });
-
-      if (!user) {
-        throw new NotFoundError('User');
-      }
-
-      return this.formatUserProfile(user);
     });
   }
 
@@ -61,26 +70,38 @@ export class UserService extends BaseService {
         },
       });
 
+      // Update cache
+      const cacheKey = createCacheKey(CacheType.USER, userId);
+      await update(cacheKey, this.formatUserProfile(updatedUser), CacheType.USER);
+
       return this.formatUserProfile(updatedUser);
     });
   }
 
   async getUserSettings(userId: string): Promise<UserSettingsResponse> {
     return this.executeWithLogging('user.getSettings', async () => {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
+      const cacheKey = createCacheKey(CacheType.USER, `${userId}:settings`);
+
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.USER,
+        fetchFn: async () => {
+          const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+          });
+
+          if (!user) {
+            throw new NotFoundError('User');
+          }
+
+          // For now, return default settings (can be extended to database storage)
+          return {
+            userId,
+            notificationsEnabled: true,
+            emailDigest: 'weekly',
+          };
+        },
       });
-
-      if (!user) {
-        throw new NotFoundError('User');
-      }
-
-      // For now, return default settings (can be extended to database storage)
-      return {
-        userId,
-        notificationsEnabled: true,
-        emailDigest: 'weekly',
-      };
     });
   }
 
@@ -98,20 +119,28 @@ export class UserService extends BaseService {
       }
 
       // For now, return updated settings (can be extended to database storage)
-      return {
+      const updatedSettings = {
         userId,
         notificationsEnabled: data.notificationsEnabled ?? true,
         emailDigest: data.emailDigest ?? 'weekly',
       };
+
+      // Update cache
+      const cacheKey = createCacheKey(CacheType.USER, `${userId}:settings`);
+      await update(cacheKey, updatedSettings, CacheType.USER);
+
+      return updatedSettings;
     });
   }
 
   async getUserTransactionHistory(
     userId: string,
     page: number = 1,
-    pageSize: number = 10
+    pageSize: number = 20
   ): Promise<PaginatedTransactions> {
     return this.executeWithLogging('user.getTransactionHistory', async () => {
+      const { sanitizePageNumber, sanitizePageSize } = await import('../../utils/pagination');
+
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
       });
@@ -120,7 +149,9 @@ export class UserService extends BaseService {
         throw new NotFoundError('User');
       }
 
-      const skip = (page - 1) * pageSize;
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, 20);
+      const skip = (safePage - 1) * safePageSize;
 
       const [tips, total] = await Promise.all([
         this.prisma.tip.findMany({
@@ -136,7 +167,7 @@ export class UserService extends BaseService {
             },
           },
           skip,
-          take: pageSize,
+          take: safePageSize,
           orderBy: {
             createdAt: 'desc',
           },
@@ -158,11 +189,18 @@ export class UserService extends BaseService {
         createdAt: tip.createdAt.toISOString(),
       }));
 
+      const totalPages = Math.ceil(total / safePageSize);
+
       return {
         transactions,
+        items: transactions,
+        data: transactions,
         total,
-        page,
-        pageSize,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
       };
     });
   }

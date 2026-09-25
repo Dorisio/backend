@@ -182,9 +182,12 @@ export class AdminService extends BaseService {
   }
 
   /**
-   * Get moderation queue - flagged wallets and frozen accounts
+   * Get moderation queue - flagged wallets and frozen accounts with pagination
    */
-  async getModerationQueue(): Promise<{
+  async getModerationQueue(
+    page: number = 1,
+    pageSize: number = 20
+  ): Promise<{
     flaggedWallets: {
       id: string;
       address: string;
@@ -199,18 +202,40 @@ export class AdminService extends BaseService {
       frozenAt: string;
       expiresAt?: string;
     }[];
+    totalWallets: number;
+    totalFreezes: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
   }> {
     return this.executeWithLogging('admin.moderationQueue', async () => {
-      const [flaggedWallets, frozenAccounts] = await Promise.all([
+      const { sanitizePageNumber, sanitizePageSize } = await import('../../utils/pagination');
+
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, 20);
+      const skip = (safePage - 1) * safePageSize;
+
+      const [flaggedWallets, totalWallets, frozenAccounts, totalFreezes] = await Promise.all([
         this.prisma.walletFlag.findMany({
           where: { resolved: false },
           orderBy: { createdAt: 'desc' },
+          skip,
+          take: safePageSize,
         }),
+        this.prisma.walletFlag.count({ where: { resolved: false } }),
         this.prisma.accountFreeze.findMany({
           where: { resolved: false },
           orderBy: { createdAt: 'desc' },
+          skip,
+          take: safePageSize,
         }),
+        this.prisma.accountFreeze.count({ where: { resolved: false } }),
       ]);
+
+      const maxTotal = Math.max(totalWallets, totalFreezes);
+      const totalPages = Math.ceil(maxTotal / safePageSize) || 1;
 
       return {
         flaggedWallets: flaggedWallets.map((f) => ({
@@ -227,6 +252,13 @@ export class AdminService extends BaseService {
           frozenAt: f.createdAt.toISOString(),
           expiresAt: f.expiresAt?.toISOString(),
         })),
+        totalWallets,
+        totalFreezes,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
       };
     });
   }

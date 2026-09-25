@@ -4,8 +4,10 @@ import { AuthService } from './auth.service';
 import {
   RegisterRequestSchema,
   LoginRequestSchema,
+  RefreshTokenRequestSchema,
   RegisterRequest,
   LoginRequest,
+  RefreshTokenRequest,
 } from './auth.types';
 import { formatSuccess } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
@@ -44,9 +46,6 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
     '/api/v1/auth/register',
     {
       schema: {
-        
-        
-
         body: {
           type: 'object',
           required: ['email', 'password'],
@@ -58,15 +57,14 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
         },
         response: {
           201: {
-
             type: 'object',
             properties: {
               success: { type: 'boolean' },
               data: {
                 type: 'object',
                 properties: {
-                  token: { type: 'string' },
-                  user: { type: 'object' },
+                  id: { type: 'string' },
+                  email: { type: 'string' },
                 },
               },
             },
@@ -86,9 +84,6 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
     '/api/v1/auth/login',
     {
       schema: {
-        
-        
-
         body: {
           type: 'object',
           required: ['email', 'password'],
@@ -99,14 +94,14 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
         },
         response: {
           200: {
-
             type: 'object',
             properties: {
               success: { type: 'boolean' },
               data: {
                 type: 'object',
                 properties: {
-                  token: { type: 'string', description: 'JWT token' },
+                  accessToken: { type: 'string', description: 'JWT access token' },
+                  refreshToken: { type: 'string', description: 'JWT refresh token' },
                   user: { type: 'object' },
                 },
               },
@@ -119,7 +114,69 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = LoginRequestSchema.parse(request.body);
       const result = await authService.login(body);
-      reply.send(formatSuccess(result));
+      
+      // Set refresh token as httpOnly cookie
+      reply.setCookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        secure: config.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: parseExpiryToMs(config.JWT_REFRESH_EXPIRES_IN) / 1000,
+      });
+
+      reply.send(formatSuccess({
+        ...result,
+        refreshToken: undefined, // Don't send refresh token in body, it's in cookie
+      }));
+    }
+  );
+
+  app.post<{ Body: RefreshTokenRequest }>(
+    '/api/v1/auth/refresh',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['refreshToken'],
+          properties: {
+            refreshToken: { type: 'string', description: 'Refresh token' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  accessToken: { type: 'string', description: 'New JWT access token' },
+                  refreshToken: { type: 'string', description: 'New JWT refresh token' },
+                },
+              },
+            },
+          },
+          401: { description: 'Invalid or revoked refresh token' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = RefreshTokenRequestSchema.parse(request.body);
+      const result = await authService.refreshAccessToken(body.refreshToken);
+      
+      // Set new refresh token as httpOnly cookie
+      reply.setCookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        secure: config.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: parseExpiryToMs(config.JWT_REFRESH_EXPIRES_IN) / 1000,
+      });
+
+      reply.send(formatSuccess({
+        ...result,
+        refreshToken: undefined, // Don't send refresh token in body, it's in cookie
+      }));
     }
   );
 
@@ -128,13 +185,8 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
     {
       preHandler: authMiddleware,
       schema: {
-        
-        
-
-        
         response: {
           200: {
-
             type: 'object',
             properties: {
               success: { type: 'boolean' },
@@ -172,10 +224,6 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
     {
       preHandler: authMiddleware,
       schema: {
-        
-        
-
-        
         response: {
           200: { description: 'Logout successful' },
           401: { description: 'Unauthorized' },
@@ -191,6 +239,12 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
         const expiresAt = new Date(Date.now() + expiryMs);
         await blacklistToken(token, expiresAt);
       }
+      
+      // Clear refresh token cookie
+      reply.clearCookie('refreshToken', {
+        path: '/',
+      });
+      
       reply.send(formatSuccess({ message: 'Logged out successfully' }));
     }
   );

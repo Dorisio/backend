@@ -1,5 +1,6 @@
 import { register, Counter, Gauge, Histogram } from 'prom-client';
 import { PrismaClient } from '@prisma/client';
+import type { Pool } from 'generic-pool';
 
 // Initialize Prometheus metrics
 export const metricsRegister = register;
@@ -68,6 +69,50 @@ export const requestDurationHistogram = new Histogram({
   labelNames: ['method', 'route', 'status'],
   buckets: [0.1, 0.5, 1, 2, 5, 10],
 });
+
+// Cache metrics
+export const cacheHits = new Counter({
+  name: 'dorisio_cache_hits_total',
+  help: 'Total cache hits',
+});
+
+export const cacheMisses = new Counter({
+  name: 'dorisio_cache_misses_total',
+  help: 'Total cache misses',
+});
+
+export const cacheSizeGauge = new Gauge({
+  name: 'dorisio_cache_size',
+  help: 'Current in-memory fallback cache size',
+});
+
+export const cacheHitRateGauge = new Gauge({
+  name: 'dorisio_cache_hit_rate',
+  help: 'Cache hit rate (0-1)',
+});
+
+export function registerPoolMetrics(pool: Pool<any>) {
+  // Expose pool stats via gauges
+  const poolUsed = new Gauge({ name: 'dorisio_redis_pool_used', help: 'Number of used connections' });
+  const poolWaiting = new Gauge({ name: 'dorisio_redis_pool_waiting', help: 'Number of waiting acquires' });
+  const poolSize = new Gauge({ name: 'dorisio_redis_pool_size', help: 'Total pool size' });
+
+  setInterval(() => {
+    try {
+      const poolState = pool as Partial<{
+        borrowed: number;
+        pending: number;
+        size: number;
+      }>;
+
+      poolUsed.set(poolState.borrowed ?? poolState.pending ?? 0);
+      poolWaiting.set(poolState.pending ?? 0);
+      poolSize.set(poolState.size ?? 0);
+    } catch (e) {
+      // ignore
+    }
+  }, 5000);
+}
 
 export const dbQueryDurationHistogram = new Histogram({
   name: 'dorisio_db_query_duration_seconds',

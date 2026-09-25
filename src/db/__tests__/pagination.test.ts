@@ -1,107 +1,109 @@
-import { describe, it, expect } from 'vitest';
-import {
-  encodeCursor,
-  decodeCursor,
-  normalizePaginationParams,
-  buildCursorResult,
-  paginateArray,
-} from '../pagination';
-import { ValidationError } from '../../utils/errors';
+import { describe, it, expect, vi } from 'vitest';
+import { paginateWithOffset, paginateWithCursor } from '../pagination';
+import { encodeCursor } from '../../utils/pagination';
 
-describe('Cursor-Based Keyset Pagination', () => {
-  describe('encodeCursor & decodeCursor', () => {
-    it('should encode and decode arbitrary cursor objects', () => {
-      const data = { id: 'tip_123', createdAt: '2026-09-24T00:00:00.000Z' };
-      const cursor = encodeCursor(data);
-      expect(typeof cursor).toBe('string');
-      expect(cursor).not.toContain(' ');
+describe('Database Keyset and Offset Pagination', () => {
+  describe('paginateWithOffset', () => {
+    it('should query Prisma with correct offset, limit, order, and compute metadata', async () => {
+      const mockItems = [
+        { id: 'tip_1', amount: 10, createdAt: new Date() },
+        { id: 'tip_2', amount: 20, createdAt: new Date() },
+      ];
 
-      const decoded = decodeCursor<typeof data>(cursor);
-      expect(decoded).toEqual(data);
-    });
+      const mockModel = {
+        findMany: vi.fn().mockResolvedValue(mockItems),
+        count: vi.fn().mockResolvedValue(45),
+      };
 
-    it('should throw ValidationError on invalid cursor strings', () => {
-      expect(() => decodeCursor('invalid!not!base64url')).toThrow(ValidationError);
-    });
-  });
+      const result = await paginateWithOffset(mockModel as any, { page: 2, pageSize: 20 }, {
+        where: { creatorId: 'c_1' },
+        allowedSortFields: ['createdAt', 'amount', 'id'],
+      });
 
-  describe('normalizePaginationParams', () => {
-    it('should default to first=20 if no params provided', () => {
-      const normalized = normalizePaginationParams({});
-      expect(normalized.limit).toBe(20);
-      expect(normalized.isForward).toBe(true);
-      expect(normalized.cursor).toBeUndefined();
-    });
+      expect(mockModel.findMany).toHaveBeenCalledWith({
+        where: { creatorId: 'c_1' },
+        include: undefined,
+        select: undefined,
+        skip: 20,
+        take: 20,
+        orderBy: [
+          { createdAt: 'desc' },
+          { id: 'desc' },
+        ],
+      });
 
-    it('should handle forward pagination with first and after', () => {
-      const normalized = normalizePaginationParams({ first: 10, after: 'cur_123' });
-      expect(normalized.limit).toBe(10);
-      expect(normalized.isForward).toBe(true);
-      expect(normalized.cursor).toBe('cur_123');
-    });
-
-    it('should handle backward pagination with last and before', () => {
-      const normalized = normalizePaginationParams({ last: 15, before: 'cur_456' });
-      expect(normalized.limit).toBe(15);
-      expect(normalized.isForward).toBe(false);
-      expect(normalized.cursor).toBe('cur_456');
-    });
-
-    it('should reject invalid combinations', () => {
-      expect(() => normalizePaginationParams({ first: 10, last: 10 })).toThrow(ValidationError);
-      expect(() => normalizePaginationParams({ after: 'a', before: 'b' })).toThrow(ValidationError);
-      expect(() => normalizePaginationParams({ first: 0 })).toThrow(ValidationError);
-      expect(() => normalizePaginationParams({ first: 150 })).toThrow(ValidationError);
+      expect(result.items).toHaveLength(2);
+      expect(result.total).toBe(45);
+      expect(result.page).toBe(2);
+      expect(result.pageSize).toBe(20);
+      expect(result.totalPages).toBe(3);
+      expect(result.hasNext).toBe(true);
+      expect(result.hasPrev).toBe(true);
     });
   });
 
-  describe('paginateArray', () => {
-    const sampleItems = Array.from({ length: 50 }, (_, i) => ({
-      id: `item_${i + 1}`,
-      val: i + 1,
-    }));
+  describe('paginateWithCursor', () => {
+    it('should query Prisma with take: limit + 1 and build pageInfo accurately', async () => {
+      const mockTips = Array.from({ length: 21 }, (_, i) => ({
+        id: `tip_${i + 1}`,
+        amount: (i + 1) * 10,
+        createdAt: new Date(),
+      }));
 
-    it('should paginate first page correctly', () => {
-      const result = paginateArray(sampleItems, { first: 5 }, (item) => ({ id: item.id }));
+      const mockModel = {
+        findMany: vi.fn().mockResolvedValue(mockTips),
+        count: vi.fn().mockResolvedValue(100),
+      };
 
-      expect(result.edges).toHaveLength(5);
-      expect(result.edges[0].node.id).toBe('item_1');
-      expect(result.edges[4].node.id).toBe('item_5');
+      const result = await paginateWithCursor(mockModel as any, { limit: 20 }, {
+        where: { creatorId: 'c_1' },
+      });
+
+      // Should take 21 (limit + 1) to determine if next page exists
+      expect(mockModel.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 21,
+          skip: 0,
+          cursor: undefined,
+        })
+      );
+
+      // Should slice down to 20
+      expect(result.items).toHaveLength(20);
+      expect(result.hasMore).toBe(true);
       expect(result.pageInfo.hasNextPage).toBe(true);
       expect(result.pageInfo.hasPreviousPage).toBe(false);
-      expect(result.pageInfo.startCursor).toBeDefined();
-      expect(result.pageInfo.endCursor).toBeDefined();
-      expect(result.total).toBe(50);
+      expect(result.nextCursor).toBeDefined();
     });
 
-    it('should paginate next page using after cursor', () => {
-      const firstPage = paginateArray(sampleItems, { first: 5 }, (item) => ({ id: item.id }));
-      const afterCursor = firstPage.pageInfo.endCursor!;
+    it('should use cursor and skip: 1 when after cursor is provided', async () => {
+      const afterCursor = encodeCursor({ id: 'tip_20' });
+      const mockTips = Array.from({ length: 5 }, (_, i) => ({
+        id: `tip_${i + 21}`,
+        amount: (i + 21) * 10,
+        createdAt: new Date(),
+      }));
 
-      const secondPage = paginateArray(
-        sampleItems,
-        { first: 5, after: afterCursor },
-        (item) => ({ id: item.id })
+      const mockModel = {
+        findMany: vi.fn().mockResolvedValue(mockTips),
+        count: vi.fn().mockResolvedValue(25),
+      };
+
+      const result = await paginateWithCursor(mockModel as any, { limit: 20, after: afterCursor });
+
+      expect(mockModel.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 21,
+          skip: 1,
+          cursor: { id: 'tip_20' },
+        })
       );
 
-      expect(secondPage.edges).toHaveLength(5);
-      expect(secondPage.edges[0].node.id).toBe('item_6');
-      expect(secondPage.edges[4].node.id).toBe('item_10');
-      expect(secondPage.pageInfo.hasPreviousPage).toBe(true);
-      expect(secondPage.pageInfo.hasNextPage).toBe(true);
-    });
-
-    it('should handle last page correctly', () => {
-      const lastPage = paginateArray(
-        sampleItems,
-        { first: 10, after: encodeCursor({ id: 'item_45' }) },
-        (item) => ({ id: item.id })
-      );
-
-      expect(lastPage.edges).toHaveLength(5);
-      expect(lastPage.edges[0].node.id).toBe('item_46');
-      expect(lastPage.edges[4].node.id).toBe('item_50');
-      expect(lastPage.pageInfo.hasNextPage).toBe(false);
+      expect(result.items).toHaveLength(5);
+      expect(result.hasMore).toBe(false);
+      expect(result.pageInfo.hasNextPage).toBe(false);
+      expect(result.pageInfo.hasPreviousPage).toBe(true);
+      expect(result.nextCursor).toBeNull();
     });
   });
 });
