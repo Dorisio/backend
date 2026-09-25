@@ -1,6 +1,11 @@
-import { Request, Response, NextFunction } from 'express';
-import { cacheService } from '../lib/cache';
+import { FastifyRequest, FastifyReply } from 'fastify';
+import cacheService, { CacheService } from '../lib/cache';
 
+/**
+ * HTTP response caching middleware (Express-style API kept from the Redis
+ * caching PR, but wired to Fastify's request/reply objects used elsewhere in
+ * this service).
+ */
 export interface CacheOptions {
   ttl?: number;
   key?: string;
@@ -8,53 +13,42 @@ export interface CacheOptions {
 }
 
 export function cacheMiddleware(options: CacheOptions = {}) {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    if (options.sensitive) {
-      return next();
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    if (options.sensitive || req.method !== 'GET') {
+      return;
     }
 
-    if (req.method !== 'GET') {
-      return next();
-    }
-
-    const cacheKey = options.key || `req:${req.method}:${req.originalUrl}`;
-
+    const cacheKey = options.key || `req:${req.method}:${req.url}`;
     try {
-      const cached = await cacheService.get<{ body: any; statusCode: number }>(cacheKey);
-
+      const cached = await cacheService.get<{ body: unknown; statusCode: number }>(cacheKey);
       if (cached) {
-        res.status(cached.statusCode).json(cached.body);
+        reply.code(cached.statusCode).send(cached.body);
         return;
       }
 
-      const originalJson = res.json.bind(res);
-      res.json = (body: any) => {
-        const statusCode = res.statusCode || 200;
-        cacheService.set(cacheKey, { body, statusCode }, options.ttl).catch(() => {
-          // Ignore cache set errors
-        });
-        return originalJson(body);
-      };
-
-      next();
+      // Capture the JSON payload once the route handler sends it.
+      const originalSend = reply.send.bind(reply);
+      reply.send = ((body: unknown) => {
+        const statusCode = reply.statusCode || 200;
+        void cacheService.set(cacheKey, { body, statusCode }, options.ttl);
+        return originalSend(body);
+      }) as typeof reply.send;
     } catch (error) {
-      console.error('Cache middleware error:', error);
-      next();
+      req.log.error({ error }, 'Cache middleware error');
     }
   };
 }
 
-export function invalidateCacheMiddleware() {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
-      const pattern = options?.pattern || '*';
-      await cacheService.invalidatePattern(pattern);
+export function invalidateCacheMiddleware(options: { pattern?: string } = {}) {
+  return async (req: FastifyRequest, _reply: FastifyReply) => {
+    if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+      await cacheService.invalidatePattern(options.pattern || '*');
     }
-    next();
   };
 }
 
-export function getCacheMetrics(req: Request, res: Response) {
-  const metrics = cacheService.getMetrics();
-  res.json(metrics);
+export async function getCacheMetrics(_req: FastifyRequest, reply: FastifyReply) {
+  reply.send(cacheService.getMetrics());
 }
+
+export { CacheService };

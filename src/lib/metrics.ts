@@ -107,15 +107,10 @@ export function registerPoolMetrics(pool: Pool<any>) {
 
   setInterval(() => {
     try {
-      const poolState = pool as Partial<{
-        borrowed: number;
-        pending: number;
-        size: number;
-      }>;
-
-      poolUsed.set(poolState.borrowed ?? poolState.pending ?? 0);
-      poolWaiting.set(poolState.pending ?? 0);
-      poolSize.set(poolState.size ?? 0);
+      // generic-pool exposes these properties at runtime
+      poolUsed.set((pool as any).borrowed || (pool as any).pending || 0);
+      poolWaiting.set((pool as any).pending || 0);
+      poolSize.set((pool as any).size || 0);
     } catch (e) {
       // ignore
     }

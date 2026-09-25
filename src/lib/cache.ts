@@ -1,4 +1,4 @@
-import { createClient, RedisClientType, RedisFunctions, RedisScripts } from 'redis';
+import { createClient, RedisClientType } from 'redis';
 import { cacheConfig, CacheConfig } from '../config/cache';
 
 interface CacheMetrics {
@@ -10,7 +10,7 @@ interface CacheMetrics {
 }
 
 export class CacheService {
-  private client: RedisClientType<RedisFunctions, RedisScripts> | null = null;
+  private client: RedisClientType | null = null;
   private metrics: CacheMetrics = {
     hits: 0,
     misses: 0,
@@ -33,6 +33,9 @@ export class CacheService {
         socket: {
           host: cacheConfig.host,
           port: cacheConfig.port,
+          // Give up immediately after a failed connection: a client that
+          // retries forever spawns unhandled errors and keeps test runs alive.
+          reconnectStrategy: false,
         },
         password: cacheConfig.password,
         database: cacheConfig.db,
@@ -53,6 +56,14 @@ export class CacheService {
     } catch (error) {
       console.error('Failed to connect to Redis:', error);
       this.isReady = false;
+      // Detach listeners and drop the reference so the dead client cannot
+      // keep the event loop (or a test run) alive.
+      try {
+        this.client.removeAllListeners();
+      } catch {
+        // ignore - client may be partially initialised
+      }
+      this.client = null;
       throw error;
     }
   }
@@ -149,7 +160,7 @@ export class CacheService {
         cursor = result.cursor;
 
         if (result.keys.length > 0) {
-          await this.client!.del(...result.keys);
+          await this.client!.del(result.keys);
           count += result.keys.length;
         }
       } while (cursor !== 0);
@@ -278,3 +289,4 @@ export class CacheService {
 }
 
 export const cacheService = new CacheService();
+export default cacheService;
