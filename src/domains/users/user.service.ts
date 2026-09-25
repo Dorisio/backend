@@ -10,6 +10,18 @@ import {
 } from './user.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
 import { getOrFetch, invalidate, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import { DEFAULT_PAGE_SIZE, sanitizePageNumber, sanitizePageSize } from '../../utils/pagination';
+
+/** Columns exposed by the public user profile (never the password hash). */
+const USER_PROFILE_SELECT = {
+  id: true,
+  email: true,
+  name: true,
+  role: true,
+  verified: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 export class UserService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -26,6 +38,7 @@ export class UserService extends BaseService {
         fetchFn: async () => {
           const user = await this.prisma.user.findUnique({
             where: { id: userId },
+            select: USER_PROFILE_SELECT,
           });
 
           if (!user) {
@@ -45,6 +58,7 @@ export class UserService extends BaseService {
     return this.executeWithLogging('user.updateProfile', async () => {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
+        select: { id: true, email: true, name: true },
       });
 
       if (!user) {
@@ -55,6 +69,7 @@ export class UserService extends BaseService {
       if (data.email && data.email !== user.email) {
         const existingUser = await this.prisma.user.findUnique({
           where: { email: data.email },
+          select: { id: true },
         });
 
         if (existingUser) {
@@ -68,11 +83,15 @@ export class UserService extends BaseService {
           name: data.name ?? user.name,
           email: data.email ?? user.email,
         },
+        select: USER_PROFILE_SELECT,
       });
 
       // Update cache
       const cacheKey = createCacheKey(CacheType.USER, userId);
       await update(cacheKey, this.formatUserProfile(updatedUser), CacheType.USER);
+      // Settings cache is derived from the same row; drop it so the next read
+      // re-evaluates against fresh data.
+      await invalidate(createCacheKey(CacheType.USER, `${userId}:settings`));
 
       return this.formatUserProfile(updatedUser);
     });
@@ -88,6 +107,7 @@ export class UserService extends BaseService {
         fetchFn: async () => {
           const user = await this.prisma.user.findUnique({
             where: { id: userId },
+            select: { id: true },
           });
 
           if (!user) {
@@ -112,6 +132,7 @@ export class UserService extends BaseService {
     return this.executeWithLogging('user.updateSettings', async () => {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
+        select: { id: true },
       });
 
       if (!user) {
@@ -139,18 +160,8 @@ export class UserService extends BaseService {
     pageSize: number = 20
   ): Promise<PaginatedTransactions> {
     return this.executeWithLogging('user.getTransactionHistory', async () => {
-      const { sanitizePageNumber, sanitizePageSize } = await import('../../utils/pagination');
-
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user) {
-        throw new NotFoundError('User');
-      }
-
       const safePage = sanitizePageNumber(page);
-      const safePageSize = sanitizePageSize(pageSize, 20);
+      const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
       const skip = (safePage - 1) * safePageSize;
 
       const [tips, total] = await Promise.all([
@@ -158,7 +169,13 @@ export class UserService extends BaseService {
           where: {
             fromUserId: userId,
           },
-          include: {
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            creatorId: true,
+            message: true,
+            createdAt: true,
             creator: {
               select: {
                 id: true,
@@ -168,9 +185,7 @@ export class UserService extends BaseService {
           },
           skip,
           take: safePageSize,
-          orderBy: {
-            createdAt: 'desc',
-          },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         }),
         this.prisma.tip.count({
           where: {

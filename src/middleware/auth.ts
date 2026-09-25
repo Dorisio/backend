@@ -14,30 +14,6 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Parse expiry string like "15m", "7d" to seconds for grace period calculation
- */
-function parseExpiryToSeconds(expiryStr: string): number {
-  const match = expiryStr.match(/^(\d+)([dhms]?)$/);
-  if (!match) return 7 * 24 * 60 * 60; // Default 7 days
-
-  const value = parseInt(match[1], 10);
-  const unit = match[2] || 's';
-
-  switch (unit) {
-    case 'd':
-      return value * 24 * 60 * 60;
-    case 'h':
-      return value * 60 * 60;
-    case 'm':
-      return value * 60;
-    case 's':
-      return value;
-    default:
-      return value;
-  }
-}
-
 export const authMiddleware = async (
   request: FastifyRequest,
   _reply: FastifyReply

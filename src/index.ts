@@ -9,6 +9,7 @@ import { AppError } from './utils/errors';
 import { setServiceState } from './services/health.service';
 import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
+import { createInstrumentedPrismaClient, getPrismaPerformanceMonitor } from './db/prisma-performance';
 import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
@@ -38,8 +39,10 @@ const app = Fastify({
   },
 });
 
-// Initialize Prisma
-const prisma = new PrismaClient();
+// Initialize Prisma with query performance instrumentation (issue #12):
+// duration metrics, slow-query logging, short-lived read cache and unbounded
+// read detection. The returned client is a regular PrismaClient.
+const { client: prisma } = createInstrumentedPrismaClient();
 
 // Response schemas are documentation-only; see config/serialization.ts.
 applyJsonSerializer(app);
@@ -99,6 +102,15 @@ app.get('/health', async (_request, _reply) => {
       redis: {
         status: (redisPool && (redisPool.size ?? 0) > 0) ? 'healthy' : 'degraded',
       },
+      query_performance: (() => {
+        const stats = getPrismaPerformanceMonitor().getStats();
+        return {
+          total_queries: stats.totalQueries,
+          slow_queries: stats.slowQueries,
+          cache_hit_rate: stats.cache.hitRate,
+          unbounded_reads: stats.unboundedReads,
+        };
+      })(),
       external_services: {
         circuit_breakers: getExternalBreakerSnapshots(),
       },
@@ -207,6 +219,7 @@ const bootstrap = async (): Promise<void> => {
   registerAnalyticsRoutes(app, prisma);
   registerAdminRoutes(app, prisma);
   registerMetricsRoute(app, prisma);
+  registerQueryPerformanceRoutes(app);
   registerJobRoutes(app);
 
   await registerGraphQL(app, prisma);

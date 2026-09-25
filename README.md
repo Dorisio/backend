@@ -319,4 +319,6 @@ MIT. See `LICENSE` for details.
 - **Jobs / workers** — see [`docs/JOBS.md`](docs/JOBS.md)
 - **CORS & security headers** — see [`docs/CORS.md`](docs/CORS.md)
 - **Database indexes** — see [`docs/INDEXING.md`](docs/INDEXING.md)
+- **Query performance** — see [`docs/QUERY_PERFORMANCE.md`](docs/QUERY_PERFORMANCE.md)
+  (`GET /diagnostics/queries/performance`, `POST /diagnostics/queries/explain`)
 - **GraphQL** — see [`docs/GRAPHQL.md`](docs/GRAPHQL.md) (`POST /graphql`)

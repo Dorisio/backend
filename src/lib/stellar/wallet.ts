@@ -252,6 +252,9 @@ export async function verifyAndLinkWallet(
  * @param userId User ID
  * @returns Array of verified wallet records
  */
+/** Hard cap on how many linked wallets a single read may return. */
+const MAX_WALLETS_PER_USER = 20;
+
 export async function getUserWallets(
   prisma: PrismaClient,
   userId: string
@@ -279,9 +282,8 @@ export async function getUserWallets(
         verified: true,
         createdAt: true,
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: MAX_WALLETS_PER_USER,
     });
 
     logger.debug(`Found ${wallets.length} verified wallets for user: ${userId}`);

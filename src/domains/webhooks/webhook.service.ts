@@ -4,6 +4,40 @@ import { ValidationError, NotFoundError } from '../../utils/errors';
 import { webhookDispatchQueue } from '../../lib/queue';
 import { logger } from '../../utils/logger';
 import crypto from 'crypto';
+import {
+  DEFAULT_PAGE_SIZE,
+  sanitizePageNumber,
+  sanitizePageSize,
+} from '../../utils/pagination';
+
+/** Columns required to build a `WebhookResponse`. */
+const WEBHOOK_RESPONSE_SELECT = {
+  id: true,
+  creatorId: true,
+  url: true,
+  events: true,
+  secret: true,
+  active: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+/** Columns required to build a delivery-history entry (payload excluded). */
+const WEBHOOK_EVENT_SELECT = {
+  id: true,
+  eventType: true,
+  status: true,
+  attempts: true,
+  lastError: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+/**
+ * Upper bound on dispatch fan-out per event. Prevents a pathological
+ * subscription list from turning one transaction into thousands of queue jobs.
+ */
+const MAX_DISPATCH_TARGETS = 50;
 
 export interface CreateWebhookRequest {
   url: string;
@@ -65,16 +99,51 @@ export class WebhookService extends BaseService {
   }
 
   /**
-   * List webhooks for a creator
+   * List webhooks for a creator (paginated, newest first).
+   *
+   * Bounded so a creator with many endpoints can never pull an unbounded
+   * result set into the request path.
    */
-  async listWebhooks(creatorId: string): Promise<WebhookResponse[]> {
+  async listWebhooks(
+    creatorId: string,
+    page: number = 1,
+    pageSize: number = DEFAULT_PAGE_SIZE
+  ): Promise<{
+    webhooks: WebhookResponse[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  }> {
     return this.executeWithLogging('webhook.list', async () => {
-      const webhooks = await this.prisma.webhook.findMany({
-        where: { creatorId },
-        orderBy: { createdAt: 'desc' },
-      });
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
+      const where = { creatorId };
 
-      return webhooks.map((w) => this.formatWebhookResponse(w));
+      const [webhooks, total] = await Promise.all([
+        this.prisma.webhook.findMany({
+          where,
+          select: WEBHOOK_RESPONSE_SELECT,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: (safePage - 1) * safePageSize,
+          take: safePageSize,
+        }),
+        this.prisma.webhook.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(total / safePageSize);
+
+      return {
+        webhooks: webhooks.map((w) => this.formatWebhookResponse(w)),
+        total,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
+      };
     });
   }
 
@@ -85,6 +154,7 @@ export class WebhookService extends BaseService {
     return this.executeWithLogging('webhook.delete', async () => {
       const webhook = await this.prisma.webhook.findUnique({
         where: { id: webhookId },
+        select: { id: true, creatorId: true },
       });
 
       if (!webhook) {
@@ -113,7 +183,8 @@ export class WebhookService extends BaseService {
     payload: Record<string, unknown>
   ): Promise<void> {
     return this.executeWithLogging('webhook.dispatch', async () => {
-      // Find active webhooks for this creator that subscribe to this event
+      // Find active webhooks for this creator that subscribe to this event.
+      // Only the columns the queue job needs are selected.
       const webhooks = await this.prisma.webhook.findMany({
         where: {
           creatorId,
@@ -122,26 +193,34 @@ export class WebhookService extends BaseService {
             has: eventType,
           },
         },
+        select: { id: true, url: true },
+        take: MAX_DISPATCH_TARGETS,
+        orderBy: { createdAt: 'asc' },
       });
 
       // Queue dispatch jobs for each webhook
-      for (const webhook of webhooks) {
-        await webhookDispatchQueue.add(
-          'dispatch-event',
-          {
-            webhookId: webhook.id,
-            transactionId,
-            eventType,
-            payload,
-          },
-          {
-            attempts: 5,
-            backoff: { type: 'exponential', delay: 2000 },
-          }
-        );
+      await Promise.all(
+        webhooks.map((webhook) =>
+          webhookDispatchQueue.add(
+            'dispatch-event',
+            {
+              webhookId: webhook.id,
+              transactionId,
+              eventType,
+              payload,
+            },
+            {
+              attempts: 5,
+              backoff: { type: 'exponential', delay: 2000 },
+            }
+          )
+        )
+      );
 
-        logger.info(`Queued webhook dispatch for ${webhook.id} (event: ${eventType})`);
-      }
+      logger.info(
+        { creatorId, eventType, queued: webhooks.length },
+        'Queued webhook dispatches'
+      );
     });
   }
 
@@ -175,10 +254,9 @@ export class WebhookService extends BaseService {
     hasPrev: boolean;
   }> {
     return this.executeWithLogging('webhook.history', async () => {
-      const { sanitizePageNumber, sanitizePageSize } = await import('../../utils/pagination');
-
       const webhook = await this.prisma.webhook.findUnique({
         where: { id: webhookId },
+        select: { id: true, creatorId: true },
       });
 
       if (!webhook || webhook.creatorId !== creatorId) {
@@ -186,7 +264,7 @@ export class WebhookService extends BaseService {
       }
 
       const safePage = sanitizePageNumber(page);
-      const safePageSize = sanitizePageSize(pageSize, 20);
+      const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
       const skip = (safePage - 1) * safePageSize;
 
       const where: any = { webhookId };
@@ -197,7 +275,8 @@ export class WebhookService extends BaseService {
       const [events, total] = await Promise.all([
         this.prisma.webhookEvent.findMany({
           where,
-          orderBy: { createdAt: 'desc' },
+          select: WEBHOOK_EVENT_SELECT,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
           skip,
           take: safePageSize,
         }),

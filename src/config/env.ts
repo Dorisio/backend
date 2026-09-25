@@ -19,6 +19,11 @@ const EnvSchema = z.object({
   DB_STATEMENT_TIMEOUT_MS: z.string().transform(Number).default('10000'),
   DB_SLOW_QUERY_THRESHOLD_MS: z.string().transform(Number).default('200'),
   DB_LOG_QUERIES: z.string().transform((val) => val === 'true').default('false'),
+  // Read-query result cache (1-5 minutes, per issue #12)
+  DB_QUERY_CACHE_TTL_MS: z.string().transform(Number).default('60000'),
+  DB_QUERY_CACHE_MAX_TTL_MS: z.string().transform(Number).default('300000'),
+  DB_QUERY_CACHE_MAX_ENTRIES: z.string().transform(Number).default('1000'),
+  DB_QUERY_CACHE_ENABLED: z.string().transform((val) => val !== 'false').default('true'),
   DB_LEAK_DETECTION_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   DB_CIRCUIT_BREAKER_FAILURES: z.string().transform(Number).default('5'),
   DB_CIRCUIT_BREAKER_RESET_MS: z.string().transform(Number).default('10000'),

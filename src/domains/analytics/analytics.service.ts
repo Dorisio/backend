@@ -103,8 +103,8 @@ export class AnalyticsService extends BaseService {
         _sum: { amount: true },
         _count: { id: true },
         _max: { createdAt: true },
-        orderBy: [{ _sum: { amount: 'desc' } }],
-        take: limit,
+        orderBy: [{ _sum: { amount: 'desc' } }, { fromUserId: 'asc' }],
+        take: boundedLimit,
       });
 
       const result = supporters.map((supporter) => ({
@@ -187,8 +187,8 @@ export class AnalyticsService extends BaseService {
       const result = {
         totalTips,
         averageTipAmount: Math.round(averageTipAmount * 100) / 100,
-        largestTip,
-        smallestTip,
+        largestTip: stats._max.amount || 0,
+        smallestTip: stats._min.amount || 0,
         tipsPerDay: Math.round(tipsPerDay * 100) / 100,
         totalEarnings: Math.round(totalEarnings * 100) / 100,
       };

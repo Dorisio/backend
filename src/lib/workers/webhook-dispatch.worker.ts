@@ -6,11 +6,6 @@ import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
-import crypto from 'crypto';
-
-const redis = createClient({
-  url: config.REDIS_URL,
-});
 
 const prisma = new PrismaClient();
 
@@ -22,9 +17,15 @@ export function createWebhookDispatchWorker() {
       logger.info(`Dispatching webhook ${webhookId} for ${eventType} event`);
       await job.updateProgress(20);
 
-      const webhook = await prisma.webhook.findUnique({ where: { id: webhookId } });
+      const webhook = await prisma.webhook.findUnique({
+        where: { id: webhookId },
+        select: { id: true, url: true, secret: true, active: true },
+      });
       if (!webhook) {
         throw new Error(`Webhook ${webhookId} not found`);
+      }
+      if (!webhook.active) {
+        return { delivered: false, status: 0, skipped: 'inactive' };
       }
 
       const signature = crypto
@@ -44,6 +45,20 @@ export function createWebhookDispatchWorker() {
         timeout: 10_000,
         validateStatus: () => true,
       });
+
+      if (response === null) {
+        await prisma.webhookEvent.create({
+          data: {
+            webhookId,
+            eventType,
+            payload: JSON.stringify(payload),
+            status: 'failed',
+            attempts: job.attemptsMade + 1,
+            lastError: 'Circuit breaker open',
+          },
+        });
+        throw new Error('Webhook delivery skipped: circuit breaker open');
+      }
 
       await prisma.webhookEvent.create({
         data: {
