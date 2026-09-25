@@ -7,6 +7,9 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3000'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  // Max time (ms) to wait for in-flight requests to drain and resources to
+  // close on SIGTERM/SIGINT before forcing exit (#23).
+  SHUTDOWN_TIMEOUT_MS: z.string().transform(Number).default('30000'),
   DATABASE_URL: z.string().optional(),
   DB_POOL_MIN: z.string().transform(Number).default('2'),
   DB_POOL_MAX: z.string().transform(Number).default('20'),
