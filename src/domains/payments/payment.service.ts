@@ -557,41 +557,63 @@ export class PaymentService extends BaseService {
    */
   async updateTipStatus(tipId: string, data: UpdateTipStatusRequest): Promise<TipResponse> {
     return this.executeWithLogging('payment.updateTipStatus', async () => {
-      return this.prisma.$transaction(async (tx) => {
-        const tip = await tx.tip.findUnique({ where: { id: tipId } });
-        if (!tip) throw new NotFoundError('Tip');
+      const maxRetries = 3;
+      let attempt = 0;
 
-        const validTransitions: Record<string, string[]> = {
-          [TipStatus.PENDING]: [TipStatus.COMPLETED, TipStatus.FAILED, TipStatus.CANCELLED],
-          [TipStatus.COMPLETED]: [],
-          [TipStatus.FAILED]: [TipStatus.PENDING],
-          [TipStatus.CANCELLED]: [],
-        };
-        if (!validTransitions[tip.status]?.includes(data.status)) {
-          throw new ValidationError(`Cannot transition from ${tip.status} to ${data.status}`);
-        }
+      while (true) {
+        try {
+          return await this.prisma.$transaction(async (tx) => {
+            const tip = await tx.tip.findUnique({ where: { id: tipId } });
+            if (!tip) throw new NotFoundError('Tip');
 
-        const changed = await tx.tip.updateMany({
-          where: { id: tipId, status: tip.status },
-          data: { status: data.status },
-        });
-        if (changed.count !== 1) {
-          throw new ValidationError('Tip status changed concurrently; reload and retry');
-        }
+            const validTransitions: Record<string, string[]> = {
+              [TipStatus.PENDING]: [TipStatus.COMPLETED, TipStatus.FAILED, TipStatus.CANCELLED],
+              [TipStatus.COMPLETED]: [],
+              [TipStatus.FAILED]: [TipStatus.PENDING],
+              [TipStatus.CANCELLED]: [],
+            };
+            if (!validTransitions[tip.status]?.includes(data.status)) {
+              throw new ValidationError(`Cannot transition from ${tip.status} to ${data.status}`);
+            }
 
-        if (data.status === TipStatus.COMPLETED && tip.status !== TipStatus.COMPLETED) {
-          await tx.creator.update({
-            where: { id: tip.creatorId },
-            data: {
-              totalEarnings: { increment: tip.amount },
-              pendingBalance: { increment: tip.amount },
-            },
+            const changed = await tx.tip.updateMany({
+              where: { id: tipId, status: tip.status },
+              data: { status: data.status },
+            });
+            if (changed.count !== 1) {
+              throw new ValidationError('Tip status changed concurrently; reload and retry');
+            }
+
+            if (data.status === TipStatus.COMPLETED && tip.status !== TipStatus.COMPLETED) {
+              await tx.creator.update({
+                where: { id: tip.creatorId },
+                data: {
+                  totalEarnings: { increment: tip.amount },
+                  pendingBalance: { increment: tip.amount },
+                },
+              });
+              logger.info(`Tip completed and creator earnings updated: ${tipId}, amount: ${tip.amount}`);
+            }
+
+            return this.formatTipResponse({ ...tip, status: data.status });
           });
-          logger.info(`Tip completed and creator earnings updated: ${tipId}, amount: ${tip.amount}`);
+        } catch (error: any) {
+          attempt++;
+          if (
+            error.code === 'P2028' || 
+            error.code === 'P2034' || 
+            (error instanceof ValidationError && error.message.includes('concurrently'))
+          ) {
+            if (attempt >= maxRetries) {
+              throw new Error(`Failed to update tip status after ${maxRetries} attempts due to conflicts`);
+            }
+            logger.warn(`Transaction conflict updating tip ${tipId}, retrying (attempt ${attempt}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
+            continue;
+          }
+          throw error;
         }
-
-        return this.formatTipResponse({ ...tip, status: data.status });
-      });
+      }
     });
   }
 
