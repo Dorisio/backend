@@ -6,3 +6,4 @@ export * from './query-optimizer';
 export * from './metrics';
 export * from './migrations';
 export * from './migrationDefinitions';
+export * from './prisma-performance';

@@ -7,7 +7,7 @@ import {
   CircuitBreakerMetrics,
 } from './circuit-breaker';
 import { QueryLogger, QueryLogOptions } from './query-logger';
-import { QueryCache } from './query-cache';
+import { QueryCache, isReadOnlyQuery } from './query-cache';
 import { PreparedStatementConfig } from './query-optimizer';
 import {
   dbPoolTotalConnections,
@@ -23,6 +23,7 @@ import {
   dbQueryErrorsCounter,
   dbCacheHitsCounter,
   dbCacheMissesCounter,
+  dbCacheSizeGauge,
 } from './metrics';
 
 export interface DatabasePoolMetrics {
@@ -60,6 +61,8 @@ export interface CustomDatabaseConfig {
   leakDetectionTimeoutMs?: number;
   circuitBreakerFailures?: number;
   circuitBreakerResetMs?: number;
+  queryCacheTtlMs?: number;
+  queryCacheMaxEntries?: number;
 }
 
 interface ActiveCheckout {
@@ -156,7 +159,11 @@ export const initializeDatabase = async (
     logQueries,
   });
 
-  queryCache = new QueryCache();
+  queryCache = new QueryCache({
+    defaultTtlMs: customConfig.queryCacheTtlMs ?? config.DB_QUERY_CACHE_TTL_MS ?? 60000,
+    maxEntries: customConfig.queryCacheMaxEntries ?? config.DB_QUERY_CACHE_MAX_ENTRIES ?? 1000,
+    maxTtlMs: config.DB_QUERY_CACHE_MAX_TTL_MS ?? 300000,
+  });
 
   const poolConfig: PoolConfig = {
     connectionString: customConfig.connectionString ?? config.DATABASE_URL,
@@ -273,7 +280,11 @@ export const getCircuitBreaker = (): DatabaseCircuitBreaker => {
 
 export const getQueryCache = (): QueryCache => {
   if (!queryCache) {
-    queryCache = new QueryCache();
+    queryCache = new QueryCache({
+      defaultTtlMs: config.DB_QUERY_CACHE_TTL_MS ?? 60000,
+      maxEntries: config.DB_QUERY_CACHE_MAX_ENTRIES ?? 1000,
+      maxTtlMs: config.DB_QUERY_CACHE_MAX_TTL_MS ?? 300000,
+    });
   }
   return queryCache;
 };
@@ -302,20 +313,11 @@ export const query = async <R extends QueryResultRow = any>(
   const sql = isPreparedStatement ? textOrConfig.text : textOrConfig;
   const queryParams = isPreparedStatement ? textOrConfig.values ?? params : params;
   const queryName = options.queryName ?? (isPreparedStatement ? textOrConfig.name : undefined);
+  const slowThresholdMs = qLogger.getSlowQueryThreshold();
 
-  // Check cache if requested
-  if (options.useCache) {
-    const cacheKey = qCache.generateKey(sql, queryParams);
-    const cached = qCache.get<QueryResult<R>>(cacheKey);
-    if (cached) {
-      dbCacheHitsCounter.inc();
-      return cached;
-    }
-    dbCacheMissesCounter.inc();
-  }
-
-  const startTime = Date.now();
-  let result: QueryResult<R>;
+  // Only read-only statements may be served from (or written to) the cache.
+  const cacheAllowed = options.useCache === true && isReadOnlyQuery(sql);
+  const cacheKey = cacheAllowed ? qCache.generateKey(sql, queryParams) : null;
 
   const executeAction = async (): Promise<QueryResult<R>> => {
     if (isPreparedStatement) {
@@ -328,60 +330,86 @@ export const query = async <R extends QueryResultRow = any>(
     return currentPool.query<R>(sql, queryParams);
   };
 
-  try {
-    if (options.bypassCircuitBreaker) {
-      result = await executeAction();
-    } else {
-      result = await cb.execute(executeAction);
+  const runInstrumented = async (): Promise<QueryResult<R>> => {
+    const startTime = process.hrtime.bigint();
+    const elapsed = (): number => Number(process.hrtime.bigint() - startTime) / 1e6;
+
+    try {
+      const result = await (options.bypassCircuitBreaker
+        ? executeAction()
+        : cb.execute(executeAction));
+
+      const durationMs = elapsed();
+
+      dbQueryDuration.observe(
+        { query_name: queryName ?? 'unnamed', status: 'success' },
+        durationMs / 1000
+      );
+
+      if (durationMs >= slowThresholdMs) {
+        dbSlowQueriesCounter.inc({ query_name: queryName ?? 'unnamed' });
+      }
+
+      qLogger.logQuery({
+        queryName,
+        operation: queryName,
+        sql,
+        params: queryParams,
+        durationMs,
+        rowCount: result.rowCount,
+      });
+
+      return result;
+    } catch (error: any) {
+      const durationMs = elapsed();
+
+      dbQueryDuration.observe(
+        { query_name: queryName ?? 'unnamed', status: 'error' },
+        durationMs / 1000
+      );
+      dbQueryErrorsCounter.inc({ error_code: error.code || 'UNKNOWN_ERROR' });
+
+      qLogger.logQuery({
+        queryName,
+        operation: queryName,
+        sql,
+        params: queryParams,
+        durationMs,
+        error,
+      });
+
+      throw error;
+    }
+  };
+
+  if (cacheKey) {
+    const peeked = qCache.peek<QueryResult<R>>(cacheKey);
+    if (peeked.hit) {
+      dbCacheHitsCounter.inc();
+      dbCacheSizeGauge.set(qCache.getStats().size);
+      return peeked.value as QueryResult<R>;
     }
 
-    const durationMs = Date.now() - startTime;
-    const durationSec = durationMs / 1000;
-
-    dbQueryDuration.observe(
-      { query_name: queryName ?? 'unnamed', status: 'success' },
-      durationSec
+    dbCacheMissesCounter.inc();
+    const result = await qCache.getOrLoad<QueryResult<R>>(
+      cacheKey,
+      runInstrumented,
+      options.cacheTtlMs,
+      options.cacheTags,
+      false
     );
-
-    if (durationMs >= (config.DB_SLOW_QUERY_THRESHOLD_MS ?? 200)) {
-      dbSlowQueriesCounter.inc({ query_name: queryName ?? 'unnamed' });
-    }
-
-    qLogger.logQuery({
-      queryName,
-      sql,
-      params: queryParams,
-      durationMs,
-      rowCount: result.rowCount,
-    });
-
-    // Populate cache if enabled
-    if (options.useCache) {
-      const cacheKey = qCache.generateKey(sql, queryParams);
-      qCache.set(cacheKey, result, options.cacheTtlMs, options.cacheTags);
-    }
-
+    dbCacheSizeGauge.set(qCache.getStats().size);
     return result;
-  } catch (error: any) {
-    const durationMs = Date.now() - startTime;
-    const durationSec = durationMs / 1000;
-
-    dbQueryDuration.observe(
-      { query_name: queryName ?? 'unnamed', status: 'error' },
-      durationSec
-    );
-    dbQueryErrorsCounter.inc({ error_code: error.code || 'UNKNOWN_ERROR' });
-
-    qLogger.logQuery({
-      queryName,
-      sql,
-      params: queryParams,
-      durationMs,
-      error,
-    });
-
-    throw error;
   }
+
+  if (options.useCache && !cacheAllowed) {
+    logger.debug(
+      { queryName: queryName ?? 'unnamed' },
+      'Query cache skipped: statement is not read-only'
+    );
+  }
+
+  return runInstrumented();
 };
 
 /**

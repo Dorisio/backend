@@ -8,6 +8,9 @@ export interface LinkWalletRequest {
   name?: string;
 }
 
+/** Hard cap on how many linked wallets a single read may return. */
+const MAX_WALLETS_PER_USER = 20;
+
 export class WalletService extends BaseService {
   constructor(private prisma: PrismaClient) {
     super();
@@ -47,8 +50,19 @@ export class WalletService extends BaseService {
 
   async getUserWallets(userId: string): Promise<any[]> {
     return this.executeWithLogging('wallet.getUserWallets', async () => {
+      // Bounded + projected: a user can only have a handful of linked wallets,
+      // but the cap keeps the read safe if that assumption ever breaks.
       const wallets = await this.prisma.wallet.findMany({
         where: { userId },
+        select: {
+          id: true,
+          publicKey: true,
+          name: true,
+          verified: true,
+          createdAt: true,
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: MAX_WALLETS_PER_USER,
       });
 
       return wallets;
@@ -59,6 +73,7 @@ export class WalletService extends BaseService {
     return this.executeWithLogging('wallet.unlink', async () => {
       const wallet = await this.prisma.wallet.findUnique({
         where: { id: walletId },
+        select: { id: true, userId: true },
       });
 
       if (!wallet) {

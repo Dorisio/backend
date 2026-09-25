@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { ValidationError } from '../../utils/errors';
+import { sanitizePageSize } from '../../utils/pagination';
 
 export class AnalyticsService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -16,25 +17,28 @@ export class AnalyticsService extends BaseService {
     return this.executeWithLogging('analytics.getCreatorEarnings', async () => {
       const creator = await this.prisma.creator.findUnique({
         where: { id: creatorId },
+        select: { pendingBalance: true },
       });
 
       if (!creator) {
         throw new ValidationError('Creator not found');
       }
 
-      const tips = await this.prisma.tip.findMany({
+      // Aggregate in the database instead of loading every tip row into memory.
+      const aggregates = await this.prisma.tip.aggregate({
         where: { creatorId },
+        _sum: { amount: true },
+        _count: { id: true },
       });
 
-      const totalEarnings = tips.reduce((sum, tip) => sum + tip.amount, 0);
-      const tipCount = tips.length;
-      const averageTip = tipCount > 0 ? totalEarnings / tipCount : 0;
+      const totalEarnings = aggregates._sum.amount || 0;
+      const tipCount = aggregates._count.id;
 
       return {
         totalEarnings,
         pendingBalance: creator.pendingBalance,
         tipCount,
-        averageTip,
+        averageTip: tipCount > 0 ? totalEarnings / tipCount : 0,
       };
     });
   }
@@ -55,15 +59,22 @@ export class AnalyticsService extends BaseService {
   async getTopCreators(limit: number = 10): Promise<any[]> {
     return this.executeWithLogging('analytics.getTopCreators', async () => {
       const creators = await this.prisma.creator.findMany({
-        take: limit,
-        orderBy: {
-          totalEarnings: 'desc',
-        },
-        include: {
+        take: sanitizePageSize(limit, 10),
+        orderBy: [
+          { totalEarnings: 'desc' },
+          { id: 'desc' },
+        ],
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatar: true,
+          verified: true,
+          totalEarnings: true,
+          createdAt: true,
           user: {
             select: {
               id: true,
-              email: true,
               name: true,
             },
           },

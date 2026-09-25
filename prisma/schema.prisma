@@ -17,49 +17,57 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  creator   Creator?
-  wallets   Wallet[]
-  tips      Tip[]
+  creator Creator?
+  wallets Wallet[]
+  tips    Tip[]
 
   @@index([role])
   @@index([createdAt])
+  // Admin listings filter by role and order by recency (issue #12).
+  @@index([role, createdAt(sort: Desc)], map: "idx_user_role_createdAt")
 }
 
 model Creator {
-  id        String   @id @default(cuid())
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  username  String   @unique
+  username    String  @unique
   displayName String?
-  bio       String?
-  avatar    String?
-  
-  verified  Boolean  @default(false)
-  isPublic  Boolean  @default(true)
-  
-  totalEarnings Float @default(0)
+  bio         String?
+  avatar      String?
+
+  verified Boolean @default(false)
+  isPublic Boolean @default(true)
+
+  totalEarnings  Float @default(0)
   pendingBalance Float @default(0)
-  
-  tips      Tip[]    @relation("CreatorTips")
-  webhooks  Webhook[]
-  freezes   AccountFreeze[]
-  
+
+  tips     Tip[]           @relation("CreatorTips")
+  webhooks Webhook[]
+  freezes  AccountFreeze[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([verified, isPublic])
+  // Creator discovery feeds: visibility filter + deterministic keyset order.
+  @@index([isPublic, createdAt(sort: Desc), id(sort: Desc)], map: "idx_creator_public_createdAt")
+  // Leaderboard / "top creators" ordering after the visibility filter.
+  @@index([isPublic, verified, totalEarnings(sort: Desc)], map: "idx_creator_public_verified_earnings")
+  // Global top-earners ranking (no filters).
+  @@index([totalEarnings(sort: Desc)], map: "idx_creator_totalEarnings")
 }
 
 model Wallet {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  publicKey String   @unique
+  publicKey String  @unique
   name      String?
-  verified  Boolean  @default(false)
-  
+  verified  Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -67,25 +75,33 @@ model Wallet {
 }
 
 model Tip {
-  id        String   @id @default(cuid())
+  id         String @id @default(cuid())
   fromUserId String
-  fromUser   User     @relation(fields: [fromUserId], references: [id], onDelete: Cascade)
-  
+  fromUser   User   @relation(fields: [fromUserId], references: [id], onDelete: Cascade)
+
   creatorId String
-  creator   Creator  @relation("CreatorTips", fields: [creatorId], references: [id], onDelete: Cascade)
-  
-  amount    Float
-  message   String?
-  
-  status    String   @default("pending")
+  creator   Creator @relation("CreatorTips", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  amount  Float
+  message String?
+
+  status          String  @default("pending")
   transactionHash String? @unique
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([creatorId, status, createdAt])
   @@index([fromUserId, createdAt])
   @@index([status])
+  // Unfiltered creator tip history ordered newest-first (keyset friendly).
+  @@index([creatorId, createdAt(sort: Desc), id(sort: Desc)], map: "idx_tip_creator_createdAt")
+  // User tip history filtered by status.
+  @@index([fromUserId, status, createdAt(sort: Desc)], map: "idx_tip_fromUser_status_createdAt")
+  // Global status sweeps (reconciliation workers) ordered by time.
+  @@index([status, createdAt], map: "idx_tip_status_createdAt")
+  // "Top supporters" aggregation: filter then group by supporter without a sort step.
+  @@index([creatorId, status, fromUserId], map: "idx_tip_creator_status_fromUser")
 }
 
 model BlacklistedToken {
@@ -93,85 +109,99 @@ model BlacklistedToken {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
-  
+
   @@index([expiresAt])
 }
 
 model Webhook {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   creatorId String
-  creator   Creator  @relation(fields: [creatorId], references: [id], onDelete: Cascade)
-  
-  url       String
-  events    String[] // tip.created, tip.confirmed, tip.failed, payout.completed
-  secret    String   // HMAC secret for signature verification
-  active    Boolean  @default(true)
-  
+  creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  url    String
+  events String[] // tip.created, tip.confirmed, tip.failed, payout.completed
+  secret String // HMAC secret for signature verification
+  active Boolean  @default(true)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   webhookEvents WebhookEvent[]
-  
+
   @@index([creatorId])
+  // Webhook listing per creator, newest first.
+  @@index([creatorId, createdAt(sort: Desc)], map: "idx_webhook_creator_createdAt")
+  // Delivery worker only fans out to active endpoints.
+  @@index([creatorId, active, createdAt(sort: Desc)], map: "idx_webhook_creator_active_createdAt")
 }
 
 model WebhookEvent {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   webhookId String
-  webhook   Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
-  
-  eventType String   // tip.created, tip.confirmed, etc.
-  payload   String   // JSON payload
-  status    String   @default("pending") // pending, delivered, failed
-  attempts  Int      @default(0)
+  webhook   Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  eventType String // tip.created, tip.confirmed, etc.
+  payload   String // JSON payload
+  status    String  @default("pending") // pending, delivered, failed
+  attempts  Int     @default(0)
   lastError String?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([webhookId])
   @@index([status])
   @@index([webhookId, status])
   @@index([createdAt])
+  // Delivery log listing per webhook, newest first.
+  @@index([webhookId, createdAt(sort: Desc)], map: "idx_webhookEvent_webhook_createdAt")
+  // Retry sweeps filter by status and process oldest events first.
+  @@index([status, createdAt], map: "idx_webhookEvent_status_createdAt")
 }
 
 model WalletFlag {
-  id        String   @id @default(cuid())
-  address   String   @unique
-  
-  reason    String
-  severity  String   // low, medium, high, critical
-  notes     String?
-  
-  flaggedBy String
-  resolved  Boolean  @default(false)
+  id      String @id @default(cuid())
+  address String @unique
+
+  reason   String
+  severity String // low, medium, high, critical
+  notes    String?
+
+  flaggedBy  String
+  resolved   Boolean   @default(false)
   resolvedAt DateTime?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([resolved])
   @@index([severity])
+  // Moderation queue: open flags ordered by severity then recency.
+  @@index([resolved, severity, createdAt(sort: Desc)], map: "idx_walletFlag_resolved_severity_createdAt")
 }
 
 model AccountFreeze {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   creatorId String
-  creator   Creator  @relation(fields: [creatorId], references: [id], onDelete: Cascade)
-  
+  creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
   reason    String
   notes     String?
-  duration  Int?     // hours, null = indefinite
+  duration  Int? // hours, null = indefinite
   expiresAt DateTime?
-  
-  frozenBy  String
-  resolved  Boolean  @default(false)
+
+  frozenBy   String
+  resolved   Boolean   @default(false)
   resolvedAt DateTime?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([creatorId])
   @@index([resolved])
   @@index([expiresAt])
+  // Freeze history per creator: filter by resolution state, newest first.
+  @@index([creatorId, resolved, createdAt(sort: Desc)], map: "idx_accountFreeze_creator_resolved_createdAt")
+  // Expiry sweep: only active freezes, oldest expiry first.
+  @@index([resolved, expiresAt], map: "idx_accountFreeze_resolved_expiresAt")
 }

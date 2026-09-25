@@ -2,7 +2,6 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { verifyToken } from '../utils/jwt';
 import { UnauthorizedError } from '../utils/errors';
 import { isTokenBlacklisted } from '../utils/token-blacklist';
-import { config } from '../config';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -10,30 +9,6 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     user?: { userId: string; email: string; role: string };
-  }
-}
-
-/**
- * Parse expiry string like "15m", "7d" to seconds for grace period calculation
- */
-function parseExpiryToSeconds(expiryStr: string): number {
-  const match = expiryStr.match(/^(\d+)([dhms]?)$/);
-  if (!match) return 7 * 24 * 60 * 60; // Default 7 days
-
-  const value = parseInt(match[1], 10);
-  const unit = match[2] || 's';
-
-  switch (unit) {
-    case 'd':
-      return value * 24 * 60 * 60;
-    case 'h':
-      return value * 60 * 60;
-    case 'm':
-      return value * 60;
-    case 's':
-      return value;
-    default:
-      return value;
   }
 }
 

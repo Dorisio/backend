@@ -2,8 +2,8 @@ import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import { config } from './config/env';
 import { AppError } from './utils/errors';
-import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
+import { createInstrumentedPrismaClient, getPrismaPerformanceMonitor } from './db/prisma-performance';
 import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
 import { registerAuthRoutes } from './domains/auth/auth.routes';
 import { registerWalletRoutes } from './domains/auth/wallet.routes';
@@ -14,6 +14,7 @@ import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
+import { registerQueryPerformanceRoutes } from './routes/query-performance.routes';
 import redisPool, { startRedisHealthCheck } from './lib/redisPool';
 import { setServiceState } from './services/health.service';
 import { registerSecurityPlugins } from './plugins/security';
@@ -28,8 +29,10 @@ const app = Fastify({
   },
 });
 
-// Initialize Prisma
-const prisma = new PrismaClient();
+// Initialize Prisma with query performance instrumentation (issue #12):
+// duration metrics, slow-query logging, short-lived read cache and unbounded
+// read detection. The returned client is a regular PrismaClient.
+const { client: prisma } = createInstrumentedPrismaClient();
 
 // Plugins + routes are registered inside `bootstrap()` so async security /
 // GraphQL plugins finish before the server accepts traffic.
@@ -67,6 +70,15 @@ app.get('/health', async (_request, _reply) => {
       redis: {
         status: (redisPool && (redisPool.size ?? 0) > 0) ? 'healthy' : 'degraded',
       },
+      query_performance: (() => {
+        const stats = getPrismaPerformanceMonitor().getStats();
+        return {
+          total_queries: stats.totalQueries,
+          slow_queries: stats.slowQueries,
+          cache_hit_rate: stats.cache.hitRate,
+          unbounded_reads: stats.unboundedReads,
+        };
+      })(),
       external_services: {
         circuit_breakers: getExternalBreakerSnapshots(),
       },
@@ -151,6 +163,7 @@ const bootstrap = async (): Promise<void> => {
   registerAnalyticsRoutes(app, prisma);
   registerAdminRoutes(app, prisma);
   registerMetricsRoute(app, prisma);
+  registerQueryPerformanceRoutes(app);
   registerJobRoutes(app);
 
   await registerGraphQL(app, prisma);

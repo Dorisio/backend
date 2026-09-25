@@ -158,6 +158,17 @@ describe('PaymentService', () => {
       expect(result.amount).toBe(100);
       expect(mockPrisma.tip.findUnique).toHaveBeenCalledWith({
         where: { id: tipId },
+        select: {
+          id: true,
+          fromUserId: true,
+          creatorId: true,
+          amount: true,
+          message: true,
+          status: true,
+          transactionHash: true,
+          createdAt: true,
+          updatedAt: true,
+        },
       });
     });
 

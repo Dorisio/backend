@@ -7,7 +7,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['src/**/*.test.ts', 'src/**/__tests__/**/*.test.ts'],
+    include: [
+      'src/**/*.test.ts',
+      'src/**/__tests__/**/*.test.ts',
+      'prisma/**/__tests__/**/*.test.ts',
+    ],
     exclude: ['node_modules', 'dist'],
     testTimeout: 30000,
     hookTimeout: 30000,

@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { getMetricsText, updateMetrics } from '../lib/metrics';
 import { getPoolMetrics, getCircuitBreaker } from '../db';
+import { getPrismaPerformanceMonitor } from '../db/prisma-performance';
 import { getCircuitBreakerSnapshots, syncCircuitBreakerMetrics } from '../lib/circuit-breaker';
 
 export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient): void => {
@@ -83,6 +84,7 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
             waiting_clients: poolMetrics.waitingCount,
             circuit_breaker: cbMetrics,
           },
+          query_performance: getPrismaPerformanceMonitor().getStats(),
           external_services: {
             circuit_breakers: externalBreakers,
           },

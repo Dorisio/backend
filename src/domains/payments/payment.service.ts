@@ -23,6 +23,22 @@ import {
 } from '../../utils/pagination';
 import { paginateWithCursor } from '../../db/pagination';
 
+/**
+ * Columns required to build a `TipResponse`. Selecting explicitly keeps list
+ * and lookup reads from dragging along columns the API never serializes.
+ */
+const TIP_RESPONSE_SELECT = {
+  id: true,
+  fromUserId: true,
+  creatorId: true,
+  amount: true,
+  message: true,
+  status: true,
+  transactionHash: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 export class PaymentService extends BaseService {
   constructor(private prisma: PrismaClient) {
     super();
@@ -45,7 +61,7 @@ export class PaymentService extends BaseService {
       // Verify creator exists, is public, and is verified
       const creator = await this.prisma.creator.findUnique({
         where: { id: data.creatorId },
-        include: { user: true },
+        select: { id: true, userId: true, isPublic: true, verified: true },
       });
 
       if (!creator) {
@@ -63,6 +79,7 @@ export class PaymentService extends BaseService {
       // Verify sender is not tipping themselves
       const sender = await this.prisma.user.findUnique({
         where: { id: userId },
+        select: { id: true },
       });
 
       if (!sender) {
@@ -79,6 +96,7 @@ export class PaymentService extends BaseService {
           userId,
           verified: true,
         },
+        select: { id: true },
       });
 
       if (!wallet) {
@@ -108,6 +126,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.getTip', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
+        select: TIP_RESPONSE_SELECT,
       });
 
       if (!tip) {
@@ -172,6 +191,7 @@ export class PaymentService extends BaseService {
       const [tips, total] = await Promise.all([
         this.prisma.tip.findMany({
           where,
+          select: TIP_RESPONSE_SELECT,
           skip,
           take: safePageSize,
           orderBy,
@@ -231,6 +251,7 @@ export class PaymentService extends BaseService {
         },
         {
           where,
+          select: TIP_RESPONSE_SELECT,
           allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
           defaultSortField: 'createdAt',
           defaultSortDirection: 'desc',
@@ -290,6 +311,7 @@ export class PaymentService extends BaseService {
       const [tips, total] = await Promise.all([
         this.prisma.tip.findMany({
           where,
+          select: TIP_RESPONSE_SELECT,
           skip,
           take: safePageSize,
           orderBy,
@@ -341,6 +363,7 @@ export class PaymentService extends BaseService {
         },
         {
           where,
+          select: TIP_RESPONSE_SELECT,
           allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
           defaultSortField: 'createdAt',
           defaultSortDirection: 'desc',
@@ -363,6 +386,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.updateTipStatus', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
+        select: { id: true, creatorId: true, amount: true, status: true },
       });
 
       if (!tip) {
@@ -386,6 +410,7 @@ export class PaymentService extends BaseService {
         data: {
           status: data.status,
         },
+        select: TIP_RESPONSE_SELECT,
       });
 
       // If tip is newly completed, update creator's earnings
@@ -424,6 +449,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.buildTransaction', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
+        select: { id: true, fromUserId: true, status: true },
       });
 
       if (!tip) {
@@ -440,6 +466,7 @@ export class PaymentService extends BaseService {
           publicKey: senderPublicKey,
           verified: true,
         },
+        select: { id: true, userId: true },
       });
 
       if (!sender || sender.userId !== tip.fromUserId) {
@@ -485,6 +512,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.submitTransaction', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
+        select: { id: true, status: true },
       });
 
       if (!tip) {
@@ -505,6 +533,7 @@ export class PaymentService extends BaseService {
           data: {
             transactionHash: result.transactionHash,
           },
+          select: { status: true },
         });
 
         logger.info(
@@ -531,6 +560,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.checkConfirmation', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
+        select: TIP_RESPONSE_SELECT,
       });
 
       if (!tip) {

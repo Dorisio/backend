@@ -2,7 +2,40 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { CreateCreatorRequest, UpdateCreatorRequest } from './creator.types';
 import { ValidationError } from '../../utils/errors';
-import { getOrFetch, invalidate, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import { getOrFetch, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import {
+  DEFAULT_PAGE_SIZE,
+  sanitizePageNumber,
+  sanitizePageSize,
+  parseSortParameters,
+} from '../../utils/pagination';
+
+/**
+ * Columns exposed by the public creator profile. Projecting explicitly keeps
+ * list/detail reads from fetching unrelated columns and bounds the joined user
+ * row to what the API actually returns.
+ */
+const CREATOR_PROFILE_SELECT = {
+  id: true,
+  userId: true,
+  username: true,
+  displayName: true,
+  bio: true,
+  avatar: true,
+  verified: true,
+  isPublic: true,
+  totalEarnings: true,
+  pendingBalance: true,
+  createdAt: true,
+  updatedAt: true,
+  user: {
+    select: {
+      id: true,
+      email: true,
+      name: true,
+    },
+  },
+} as const;
 
 export class CreatorService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -16,6 +49,7 @@ export class CreatorService extends BaseService {
     return this.executeWithLogging('creator.create', async () => {
       const existingCreator = await this.prisma.creator.findUnique({
         where: { username: data.username },
+        select: { id: true },
       });
 
       if (existingCreator) {
@@ -24,6 +58,7 @@ export class CreatorService extends BaseService {
 
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
+        select: { id: true },
       });
 
       if (!user) {
@@ -59,15 +94,7 @@ export class CreatorService extends BaseService {
         fetchFn: async () => {
           const creator = await this.prisma.creator.findUnique({
             where: { username },
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  email: true,
-                  name: true,
-                },
-              },
-            },
+            select: CREATOR_PROFILE_SELECT,
           });
 
           if (!creator) {
@@ -90,15 +117,7 @@ export class CreatorService extends BaseService {
         fetchFn: async () => {
           const creator = await this.prisma.creator.findUnique({
             where: { id: creatorId },
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  email: true,
-                  name: true,
-                },
-              },
-            },
+            select: CREATOR_PROFILE_SELECT,
           });
 
           if (!creator) {
@@ -121,15 +140,7 @@ export class CreatorService extends BaseService {
           avatar: data.avatar,
           isPublic: data.isPublic,
         },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
-            },
-          },
-        },
+        select: CREATOR_PROFILE_SELECT,
       });
 
       // Update cache for both ID and username
@@ -155,6 +166,7 @@ export class CreatorService extends BaseService {
         fetchFn: async () => {
           const creator = await this.prisma.creator.findUnique({
             where: { userId },
+            select: CREATOR_PROFILE_SELECT,
           });
 
           if (!creator) {
@@ -181,10 +193,8 @@ export class CreatorService extends BaseService {
     } = {}
   ) {
     return this.executeWithLogging('creator.listCreators', async () => {
-      const { sanitizePageNumber, sanitizePageSize, parseSortParameters } = await import('../../utils/pagination');
-
       const safePage = sanitizePageNumber(page);
-      const safePageSize = sanitizePageSize(pageSize, 20);
+      const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
 
       const where: any = { isPublic: true };
       if (options.verifiedOnly) {
@@ -211,18 +221,10 @@ export class CreatorService extends BaseService {
       const [creators, total] = await Promise.all([
         this.prisma.creator.findMany({
           where,
+          select: CREATOR_PROFILE_SELECT,
           skip,
           take: safePageSize,
           orderBy,
-          include: {
-            user: {
-              select: {
-                id: true,
-                email: true,
-                name: true,
-              },
-            },
-          },
         }),
         this.prisma.creator.count({ where }),
       ]);
