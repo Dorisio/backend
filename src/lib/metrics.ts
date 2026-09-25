@@ -30,6 +30,14 @@ export const authCounter = new Counter({
   labelNames: ['type', 'status'],
 });
 
+// API version usage (#25) — tracked per request so deprecation timing
+// decisions are based on real client traffic, not assumption.
+export const apiVersionCounter = new Counter({
+  name: 'dorisio_api_version_requests_total',
+  help: 'Total requests by resolved API version',
+  labelNames: ['version', 'path'],
+});
+
 // Gauges
 export const activeTipsGauge = new Gauge({
   name: 'dorisio_active_tips',
@@ -99,15 +107,10 @@ export function registerPoolMetrics(pool: Pool<any>) {
 
   setInterval(() => {
     try {
-      const poolState = pool as Partial<{
-        borrowed: number;
-        pending: number;
-        size: number;
-      }>;
-
-      poolUsed.set(poolState.borrowed ?? poolState.pending ?? 0);
-      poolWaiting.set(poolState.pending ?? 0);
-      poolSize.set(poolState.size ?? 0);
+      // generic-pool exposes these properties at runtime
+      poolUsed.set((pool as any).borrowed || (pool as any).pending || 0);
+      poolWaiting.set((pool as any).pending || 0);
+      poolSize.set((pool as any).size || 0);
     } catch (e) {
       // ignore
     }

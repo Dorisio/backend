@@ -32,8 +32,8 @@ const canUseRedis = await isRedisAvailable();
 describe.skipIf(!canUseRedis)('Redis Pool', () => {
   it('creates a pool with min and max', async () => {
     expect(redisPool).toBeDefined();
-    const poolWithRuntimeOptions = redisPool as typeof redisPool & { min?: number };
-    expect(poolWithRuntimeOptions.min).toBeDefined();
+    // pool exposes options
+    expect(redisPool.min).toBeDefined();
   });
 
   it('acquire and release client', async () => {

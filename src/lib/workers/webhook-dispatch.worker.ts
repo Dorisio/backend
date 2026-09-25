@@ -34,23 +34,16 @@ export function createWebhookDispatchWorker() {
         .digest('hex');
 
       await job.updateProgress(60);
-      const response = await executeWithBreaker('webhook', () =>
-        axios.post(webhook.url, payload, {
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Dorisio-Signature': `sha256=${signature}`,
-            'X-Dorisio-Event': eventType,
-            'X-Dorisio-Delivery-Id': job.id,
-          },
-          timeout: 10_000,
-          validateStatus: () => true,
-        })
-      ).catch((error: unknown) => {
-        if (error instanceof CircuitBreakerOpenError) {
-          logger.warn({ webhookId }, 'Webhook circuit breaker open, skipping delivery');
-          return null;
-        }
-        throw error;
+      const response = await axios.post(webhook.url, payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dorisio-Signature': `sha256=${signature}`,
+          'X-Dorisio-Event': eventType,
+          'X-Dorisio-Delivery-Id': job.id,
+          'X-Request-Id': String(job.data.requestId ?? job.id),
+        },
+        timeout: 10_000,
+        validateStatus: () => true,
       });
 
       if (response === null) {

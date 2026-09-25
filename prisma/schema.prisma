@@ -14,17 +14,14 @@ model User {
   name      String?
   role      String   @default("fan")
   verified  Boolean  @default(false)
+  notificationPreferences Json @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  creator Creator?
-  wallets Wallet[]
-  tips    Tip[]
-
-  @@index([role])
-  @@index([createdAt])
-  // Admin listings filter by role and order by recency (issue #12).
-  @@index([role, createdAt(sort: Desc)], map: "idx_user_role_createdAt")
+  creator   Creator?
+  wallets   Wallet[]
+  tips      Tip[]
+  payments  Payment[]
 }
 
 model Creator {
@@ -42,11 +39,12 @@ model Creator {
 
   totalEarnings  Float @default(0)
   pendingBalance Float @default(0)
-
-  tips     Tip[]           @relation("CreatorTips")
-  webhooks Webhook[]
-  freezes  AccountFreeze[]
-
+  
+  tips      Tip[]    @relation("CreatorTips")
+  webhooks  Webhook[]
+  freezes   AccountFreeze[]
+  payments  Payment[]
+  
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -113,6 +111,17 @@ model BlacklistedToken {
   @@index([expiresAt])
 }
 
+// Tracks revoked/rotated refresh tokens by their JWT id (jti) so that a
+// leaked or already-used refresh token cannot be replayed.
+model BlacklistedRefreshToken {
+  id        String   @id @default(cuid())
+  jti       String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 model Webhook {
   id        String  @id @default(cuid())
   creatorId String
@@ -148,7 +157,8 @@ model WebhookEvent {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
+  
+  @@index([webhookId, status, createdAt(sort: Desc)])
   @@index([webhookId])
   @@index([status])
   @@index([webhookId, status])
@@ -157,6 +167,78 @@ model WebhookEvent {
   @@index([webhookId, createdAt(sort: Desc)], map: "idx_webhookEvent_webhook_createdAt")
   // Retry sweeps filter by status and process oldest events first.
   @@index([status, createdAt], map: "idx_webhookEvent_status_createdAt")
+}
+
+// A payment processed by an external provider (Stripe et al). Raw card data is
+// never stored — only provider references and tokenized intent ids.
+model Payment {
+  id             String   @id @default(cuid())
+  idempotencyKey String   @unique
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  creatorId String?
+  creator   Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+
+  provider    String // stripe
+  method      String // card | wallet | crypto
+  providerRef String? // provider payment intent reference
+  amount      Float
+  currency    String  @default("USD")
+  status      String  @default("pending") // pending, requires_action, processing, succeeded, failed, canceled, refunded, partially_refunded, disputed
+  description String?
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events  PaymentEvent[]
+  refunds Refund[]
+
+  @@index([userId, createdAt])
+  @@index([creatorId])
+  @@index([status])
+  @@index([providerRef])
+}
+
+// Immutable audit trail for a payment. Every state change and provider callback
+// appends an event so the full history can be reconstructed.
+model PaymentEvent {
+  id        String  @id @default(cuid())
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  type   String // payment.created, payment.succeeded, payment.failed, refund.created, chargeback.created, webhook.received
+  actor  String? // user id, "system" or "provider"
+  data   Json?
+
+  // Provider event id — unique so webhook redelivery is idempotent.
+  providerEventId String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([paymentId])
+  @@index([type])
+}
+
+model Refund {
+  id             String  @id @default(cuid())
+  paymentId      String
+  payment        Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  idempotencyKey String  @unique
+
+  amount       Float
+  currency     String  @default("USD")
+  reason       String?
+  status       String  @default("pending") // pending, succeeded, failed
+  providerRef  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([paymentId])
+  @@index([status])
 }
 
 model WalletFlag {
@@ -173,7 +255,9 @@ model WalletFlag {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
+  
+  @@index([resolved, address])
+  @@index([resolved, createdAt(sort: Desc)])
   @@index([resolved])
   @@index([severity])
   // Moderation queue: open flags ordered by severity then recency.
@@ -196,7 +280,8 @@ model AccountFreeze {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
+  
+  @@index([creatorId, resolved, expiresAt])
   @@index([creatorId])
   @@index([resolved])
   @@index([expiresAt])

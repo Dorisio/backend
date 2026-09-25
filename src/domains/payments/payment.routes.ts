@@ -1,18 +1,31 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { PaymentService } from './payment.service';
+import { UnauthorizedError } from '../../utils/errors';
 import {
-  CreateTipSchema,
-  UpdateTipStatusSchema,
+  BuildPaymentTransactionInput,
   BuildPaymentTransactionSchema,
+  CreateTipInput,
+  CreateTipSchema,
+  CreatorIdParamsSchema,
+  SubmitPaymentTransactionInput,
   SubmitPaymentTransactionSchema,
-  UpdateTipStatusRequest,
-  BuildPaymentTransactionRequest,
-} from './payment.types';
-import { formatSuccess, formatError } from '../../types/response';
+  TipHistoryQueryInput,
+  TipHistoryQuerySchema,
+  TipIdParamsSchema,
+  UpdateTipStatusSchema,
+  buildPaymentTransactionJsonSchema,
+  createTipJsonSchema,
+  creatorIdParamsJsonSchema,
+  submitPaymentTransactionJsonSchema,
+  tipHistoryQueryJsonSchema,
+  tipIdParamsJsonSchema,
+  updateTipStatusJsonSchema,
+} from './payment.schemas';
+import { formatSuccess } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { rateLimitTipCreation } from '../../middleware/rate-limit';
-import { ValidationError, AppError, NotFoundError } from '../../utils/errors';
+import { validateRequest } from '../../middleware/validation';
 
 export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const paymentService = new PaymentService(prisma);
@@ -23,21 +36,12 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Requires: authenticated user with verified wallet
    * Rate limited: 10 tips per hour
    */
-  app.post<{ Body: any }>(
+  app.post<{ Body: CreateTipInput }>(
     '/api/v1/transactions/tip',
     {
-      preHandler: [authMiddleware, rateLimitTipCreation],
+      preHandler: [authMiddleware, rateLimitTipCreation, validateRequest({ body: CreateTipSchema })],
       schema: {
-        body: {
-          type: 'object',
-          required: ['creatorId', 'amount'],
-          properties: {
-            creatorId: { type: 'string' },
-            amount: { type: 'number', minimum: 1 },
-            message: { type: 'string' },
-            currency: { type: 'string', default: 'USD' },
-          },
-        },
+        body: createTipJsonSchema,
         response: {
           201: {
             type: 'object',
@@ -61,28 +65,14 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
         },
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const body = CreateTipSchema.parse(request.body);
-        const user = request.user;
-
-        if (!user) {
-          throw new Error('User not found in request');
-        }
-
-        const result = await paymentService.createTip(user.userId, body);
-        reply.code(201).send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof Error && error.message.includes('validation')) {
-          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
-        } else {
-          throw error;
-        }
+    async (request: FastifyRequest<{ Body: CreateTipInput }>, reply: FastifyReply) => {
+      const user = request.user;
+      if (!user) {
+        throw new UnauthorizedError('Authentication required');
       }
+
+      const result = await paymentService.createTip(user.userId, request.body);
+      reply.code(201).send(formatSuccess(result));
     }
   );
 
@@ -94,33 +84,18 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
   app.get<{ Params: { id: string } }>(
     '/api/v1/transactions/:id',
     {
+      preHandler: [validateRequest({ params: TipIdParamsSchema })],
       schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Tip ID' },
-          },
-        },
+        params: tipIdParamsJsonSchema,
         response: {
           200: { description: 'Tip details' },
           404: { description: 'Tip not found' },
         },
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { id } = request.params as { id: string };
-        const result = await paymentService.getTip(id);
-        reply.send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof NotFoundError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else {
-          throw error;
-        }
-      }
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const result = await paymentService.getTip(request.params.id);
+      reply.send(formatSuccess(result));
     }
   );
 
@@ -130,84 +105,48 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Requires: authenticated user
    * Supports offset and cursor pagination (default pageSize: 20, max: 100), multi-column sorting, and status filtering
    */
-  app.get<{
-    Querystring: {
-      page?: string;
-      pageSize?: string;
-      limit?: string;
-      cursor?: string;
-      after?: string;
-      first?: string;
-      sortBy?: string;
-      sortOrder?: string;
-      status?: string;
-    };
-  }>(
+  app.get<{ Querystring: TipHistoryQueryInput }>(
     '/api/v1/transactions/history',
     {
-      preHandler: authMiddleware,
+      preHandler: [authMiddleware, validateRequest({ query: TipHistoryQuerySchema })],
       schema: {
-        querystring: {
-          type: 'object',
-          properties: {
-            page: { type: 'string', default: '1', description: 'Page number (offset pagination)' },
-            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
-            limit: { type: 'string', description: 'Alias for pageSize / cursor limit (max 100)' },
-            cursor: { type: 'string', description: 'Opaque cursor for keyset pagination' },
-            after: { type: 'string', description: 'Opaque cursor after which to fetch results' },
-            first: { type: 'string', description: 'Number of items to fetch with cursor' },
-            sortBy: { type: 'string', description: 'Sort field(s) comma separated, e.g. createdAt,amount' },
-            sortOrder: { type: 'string', enum: ['asc', 'desc', 'ASC', 'DESC'], description: 'Sort order' },
-            status: { type: 'string', description: 'Filter by tip status' },
-          },
-        },
+        querystring: tipHistoryQueryJsonSchema,
         response: {
           200: { description: 'User tip history with pagination metadata' },
           401: { description: 'Unauthorized' },
         },
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const user = request.user;
+    async (request: FastifyRequest<{ Querystring: TipHistoryQueryInput }>, reply: FastifyReply) => {
+      const user = request.user;
+      if (!user) {
+        throw new UnauthorizedError('Authentication required');
+      }
 
-        if (!user) {
-          throw new Error('User not found in request');
-        }
+      const query = request.query;
+      const isCursor = Boolean(query.cursor || query.after || query.first);
 
-        const query = request.query as Record<string, any>;
-        const isCursor = Boolean(query.cursor || query.after || query.first);
+      if (isCursor) {
+        const limit = query.first ?? query.limit ?? query.pageSize ?? 20;
+        const result = await paymentService.getUserTipHistoryCursor(user.userId, {
+          limit,
+          cursor: query.cursor,
+          after: query.after,
+          sortBy: query.sortBy,
+          sortOrder: query.sortOrder,
+          status: query.status,
+        });
+        reply.send(formatSuccess(result));
+      } else {
+        const page = query.page ?? 1;
+        const pageSize = query.pageSize ?? query.limit ?? 20;
 
-        if (isCursor) {
-          const limit = query.first ? parseInt(query.first) : query.limit ? parseInt(query.limit) : query.pageSize ? parseInt(query.pageSize) : 20;
-          const result = await paymentService.getUserTipHistoryCursor(user.userId, {
-            limit,
-            cursor: query.cursor,
-            after: query.after,
-            sortBy: query.sortBy,
-            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
-            status: query.status,
-          });
-          reply.send(formatSuccess(result));
-        } else {
-          const page = query.page ? parseInt(query.page) : 1;
-          const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
-
-          const result = await paymentService.getUserTipHistory(user.userId, page, pageSize, {
-            sortBy: query.sortBy,
-            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
-            status: query.status,
-          });
-          reply.send(formatSuccess(result));
-        }
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else {
-          throw error;
-        }
+        const result = await paymentService.getUserTipHistory(user.userId, page, pageSize, {
+          sortBy: query.sortBy,
+          sortOrder: query.sortOrder,
+          status: query.status,
+        });
+        reply.send(formatSuccess(result));
       }
     }
   );
@@ -218,84 +157,49 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Public endpoint (no auth required)
    * Supports offset and cursor pagination (default pageSize: 20, max: 100), multi-column sorting, and status filtering
    */
-  app.get<{
-    Params: { creatorId: string };
-    Querystring: {
-      page?: string;
-      pageSize?: string;
-      limit?: string;
-      cursor?: string;
-      after?: string;
-      first?: string;
-      sortBy?: string;
-      sortOrder?: string;
-      status?: string;
-    };
-  }>(
+  app.get<{ Params: { creatorId: string }; Querystring: TipHistoryQueryInput }>(
     '/api/v1/transactions/creator/:creatorId',
     {
+      preHandler: [
+        validateRequest({ params: CreatorIdParamsSchema, query: TipHistoryQuerySchema }),
+      ],
       schema: {
-        params: {
-          type: 'object',
-          properties: {
-            creatorId: { type: 'string', description: 'Creator ID' },
-          },
-        },
-        querystring: {
-          type: 'object',
-          properties: {
-            page: { type: 'string', default: '1', description: 'Page number (offset pagination)' },
-            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
-            limit: { type: 'string', description: 'Alias for pageSize / cursor limit (max 100)' },
-            cursor: { type: 'string', description: 'Opaque cursor for keyset pagination' },
-            after: { type: 'string', description: 'Opaque cursor after which to fetch results' },
-            first: { type: 'string', description: 'Number of items to fetch with cursor' },
-            sortBy: { type: 'string', description: 'Sort field(s) comma separated, e.g. createdAt,amount' },
-            sortOrder: { type: 'string', enum: ['asc', 'desc', 'ASC', 'DESC'], description: 'Sort order' },
-            status: { type: 'string', description: 'Filter by tip status' },
-          },
-        },
+        params: creatorIdParamsJsonSchema,
+        querystring: tipHistoryQueryJsonSchema,
         response: {
           200: { description: 'Tips received by creator with pagination metadata' },
         },
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { creatorId } = request.params as { creatorId: string };
-        const query = request.query as Record<string, any>;
-        const isCursor = Boolean(query.cursor || query.after || query.first);
+    async (
+      request: FastifyRequest<{ Params: { creatorId: string }; Querystring: TipHistoryQueryInput }>,
+      reply: FastifyReply
+    ) => {
+      const { creatorId } = request.params;
+      const query = request.query;
+      const isCursor = Boolean(query.cursor || query.after || query.first);
 
-        if (isCursor) {
-          const limit = query.first ? parseInt(query.first) : query.limit ? parseInt(query.limit) : query.pageSize ? parseInt(query.pageSize) : 20;
-          const result = await paymentService.listTipsCursor(creatorId, {
-            limit,
-            cursor: query.cursor,
-            after: query.after,
-            sortBy: query.sortBy,
-            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
-            status: query.status,
-          });
-          reply.send(formatSuccess(result));
-        } else {
-          const page = query.page ? parseInt(query.page) : 1;
-          const pageSize = query.pageSize ? parseInt(query.pageSize) : query.limit ? parseInt(query.limit) : 20;
+      if (isCursor) {
+        const limit = query.first ?? query.limit ?? query.pageSize ?? 20;
+        const result = await paymentService.listTipsCursor(creatorId, {
+          limit,
+          cursor: query.cursor,
+          after: query.after,
+          sortBy: query.sortBy,
+          sortOrder: query.sortOrder,
+          status: query.status,
+        });
+        reply.send(formatSuccess(result));
+      } else {
+        const page = query.page ?? 1;
+        const pageSize = query.pageSize ?? query.limit ?? 20;
 
-          const result = await paymentService.listTips(creatorId, page, pageSize, {
-            sortBy: query.sortBy,
-            sortOrder: query.sortOrder?.toLowerCase() as 'asc' | 'desc',
-            status: query.status,
-          });
-          reply.send(formatSuccess(result));
-        }
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else {
-          throw error;
-        }
+        const result = await paymentService.listTips(creatorId, page, pageSize, {
+          sortBy: query.sortBy,
+          sortOrder: query.sortOrder,
+          status: query.status,
+        });
+        reply.send(formatSuccess(result));
       }
     }
   );
@@ -305,49 +209,25 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Update tip status (typically used by transaction confirmation service)
    * Requires: authenticated user (future: admin or service account)
    */
-  app.patch<{ Params: { id: string }; Body: UpdateTipStatusRequest }>(
+  app.patch<{ Params: { id: string }; Body: unknown }>(
     '/api/v1/transactions/:id/status',
     {
-      preHandler: authMiddleware,
+      preHandler: [authMiddleware, validateRequest({ params: TipIdParamsSchema, body: UpdateTipStatusSchema })],
       schema: {
-        params: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: 'Tip ID' },
-          },
-        },
-        body: {
-          type: 'object',
-          required: ['status'],
-          properties: {
-            status: { type: 'string', enum: ['pending', 'confirmed', 'failed'] },
-            transactionHash: { type: 'string', description: 'Stellar transaction hash' },
-          },
-        },
+        params: tipIdParamsJsonSchema,
+        body: updateTipStatusJsonSchema,
         response: {
           200: { description: 'Tip status updated' },
           401: { description: 'Unauthorized' },
         },
       },
     },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { id } = request.params as { id: string };
-        const body = UpdateTipStatusSchema.parse(request.body);
-
-        const result = await paymentService.updateTipStatus(id, body);
-        reply.send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof Error && error.message.includes('validation')) {
-          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
-        } else {
-          throw error;
-        }
-      }
+    async (request: FastifyRequest<{ Params: { id: string }; Body: unknown }>, reply: FastifyReply) => {
+      const result = await paymentService.updateTipStatus(
+        request.params.id,
+        request.body as Parameters<PaymentService['updateTipStatus']>[1]
+      );
+      reply.send(formatSuccess(result));
     }
   );
 
@@ -357,42 +237,36 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Requires: authenticated user
    * Body: { senderPublicKey, creatorPublicKey, amount, assetCode?, assetIssuer? }
    */
-  app.post<{ Params: { id: string }; Body: BuildPaymentTransactionRequest }>(
+  app.post<{ Params: { id: string }; Body: BuildPaymentTransactionInput }>(
     '/api/v1/transactions/:id/build',
-    { preHandler: authMiddleware },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { id } = request.params as { id: string };
-        const user = request.user;
-
-        if (!user) {
-          throw new Error('User not found in request');
-        }
-
-        const body = BuildPaymentTransactionSchema.parse(request.body);
-        const { senderPublicKey, creatorPublicKey, amount, assetCode, assetIssuer } = body;
-
-        const result = await paymentService.buildPaymentTransaction(
-          id,
-          senderPublicKey,
-          creatorPublicKey,
-          amount,
-          assetCode,
-          assetIssuer || process.env.USDC_ISSUER
-        );
-
-        reply.code(200).send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof Error && error.message.includes('validation')) {
-          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
-        } else {
-          throw error;
-        }
+    {
+      preHandler: [authMiddleware, validateRequest({ params: TipIdParamsSchema, body: BuildPaymentTransactionSchema })],
+      schema: {
+        params: tipIdParamsJsonSchema,
+        body: buildPaymentTransactionJsonSchema,
+      },
+    },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: BuildPaymentTransactionInput }>,
+      reply: FastifyReply
+    ) => {
+      const user = request.user;
+      if (!user) {
+        throw new UnauthorizedError('Authentication required');
       }
+
+      const { senderPublicKey, creatorPublicKey, amount, assetCode, assetIssuer } = request.body;
+
+      const result = await paymentService.buildPaymentTransaction(
+        request.params.id,
+        senderPublicKey,
+        creatorPublicKey,
+        amount,
+        assetCode,
+        assetIssuer || process.env.USDC_ISSUER
+      );
+
+      reply.code(200).send(formatSuccess(result));
     }
   );
 
@@ -402,34 +276,29 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    * Requires: authenticated user
    * Body: { transactionEnvelope: string }
    */
-  app.post<{ Params: { id: string }; Body: any }>(
+  app.post<{ Params: { id: string }; Body: SubmitPaymentTransactionInput }>(
     '/api/v1/transactions/:id/submit',
-    { preHandler: authMiddleware },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { id } = request.params as { id: string };
-        const user = request.user;
-
-        if (!user) {
-          throw new Error('User not found in request');
-        }
-
-        const body = SubmitPaymentTransactionSchema.parse(request.body);
-        const { transactionEnvelope } = body;
-
-        const result = await paymentService.submitPaymentTransaction(id, transactionEnvelope);
-        reply.code(200).send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof Error && error.message.includes('validation')) {
-          reply.code(400).send(formatError(error.message || 'Invalid request', 'VALIDATION_ERROR'));
-        } else {
-          throw error;
-        }
+    {
+      preHandler: [authMiddleware, validateRequest({ params: TipIdParamsSchema, body: SubmitPaymentTransactionSchema })],
+      schema: {
+        params: tipIdParamsJsonSchema,
+        body: submitPaymentTransactionJsonSchema,
+      },
+    },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: SubmitPaymentTransactionInput }>,
+      reply: FastifyReply
+    ) => {
+      const user = request.user;
+      if (!user) {
+        throw new UnauthorizedError('Authentication required');
       }
+
+      const result = await paymentService.submitPaymentTransaction(
+        request.params.id,
+        request.body.transactionEnvelope
+      );
+      reply.code(200).send(formatSuccess(result));
     }
   );
 
@@ -441,21 +310,15 @@ export const registerPaymentRoutes = (app: FastifyInstance, prisma: PrismaClient
    */
   app.get<{ Params: { id: string } }>(
     '/api/v1/transactions/:id/confirm',
-    { preHandler: authMiddleware },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { id } = request.params as { id: string };
-        const result = await paymentService.checkTransactionConfirmation(id);
-        reply.send(formatSuccess(result));
-      } catch (error) {
-        if (error instanceof ValidationError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else {
-          throw error;
-        }
-      }
+    {
+      preHandler: [authMiddleware, validateRequest({ params: TipIdParamsSchema })],
+      schema: {
+        params: tipIdParamsJsonSchema,
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const result = await paymentService.checkTransactionConfirmation(request.params.id);
+      reply.send(formatSuccess(result));
     }
   );
 };

@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { getRequestId } from '../utils/request-context';
 
 export interface QueryLogOptions {
   slowQueryThresholdMs?: number;
@@ -180,9 +181,8 @@ export class QueryLogger {
     if (error) {
       logger.error(
         {
-          queryName: safeName,
-          operation,
-          fingerprint,
+          queryName,
+          requestId: getRequestId(),
           sql: cleanSql,
           params: safeParams,
           durationMs,
@@ -205,9 +205,8 @@ export class QueryLogger {
 
       logger.warn(
         {
-          queryName: safeName,
-          operation,
-          fingerprint,
+          queryName: queryName ?? 'unnamed_query',
+          requestId: getRequestId(),
           sql: cleanSql,
           params: safeParams,
           durationMs: Math.round(durationMs * 100) / 100,
@@ -219,9 +218,8 @@ export class QueryLogger {
     } else if (this.logQueries) {
       logger.debug(
         {
-          queryName: safeName,
-          operation,
-          fingerprint,
+          queryName,
+          requestId: getRequestId(),
           sql: cleanSql,
           params: safeParams,
           durationMs: Math.round(durationMs * 100) / 100,

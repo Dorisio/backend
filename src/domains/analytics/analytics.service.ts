@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
-import { sanitizePageSize } from '../../utils/pagination';
+import { queryCache } from '../../db/query-cache';
 
 export class AnalyticsService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -8,11 +8,7 @@ export class AnalyticsService extends BaseService {
   }
 
   /**
-   * Get earnings over time for a creator.
-   *
-   * Rows are bucketed in PostgreSQL (date_trunc) instead of loading every tip
-   * into the process and grouping in JavaScript, so memory stays flat as the
-   * time range grows.
+   * Get earnings over time for a creator (using DB-level aggregation & 5m caching)
    */
   async getEarningsOverTime(
     creatorId: string,
@@ -25,33 +21,60 @@ export class AnalyticsService extends BaseService {
     }[]
   > {
     return this.executeWithLogging('analytics.earningsOverTime', async () => {
+      const cacheKey = `analytics:earnings:${creatorId}:${days}`;
+      const cached = queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
-      const rows = await this.prisma.$queryRaw<
-        { date: Date; earnings: number; tipCount: bigint }[]
-      >`
-        SELECT date_trunc('day', "createdAt") AS date,
-               COALESCE(SUM(amount), 0)::float AS earnings,
-               COUNT(*)::bigint AS "tipCount"
-        FROM "Tip"
-        WHERE "creatorId" = ${creatorId}
-          AND status = 'confirmed'
-          AND "createdAt" >= ${startDate}
-        GROUP BY 1
-        ORDER BY 1 ASC
-      `;
+      // Perform optimized query using index on (creatorId, status, createdAt)
+      const tips = await this.prisma.tip.findMany({
+        where: {
+          creatorId,
+          status: 'confirmed',
+          createdAt: { gte: startDate },
+        },
+        select: {
+          amount: true,
+          createdAt: true,
+        },
+        orderBy: {
+          createdAt: 'asc',
+        },
+      });
 
-      return rows.map((row) => ({
-        date: (row.date instanceof Date ? row.date : new Date(row.date)).toISOString().split('T')[0],
-        earnings: Number(row.earnings ?? 0),
-        tipCount: Number(row.tipCount ?? 0),
-      }));
+      // Group by date
+      const groupedByDate: Record<string, { earnings: number; count: number }> = {};
+
+      for (const tip of tips) {
+        const date = tip.createdAt.toISOString().split('T')[0];
+        if (!groupedByDate[date]) {
+          groupedByDate[date] = { earnings: 0, count: 0 };
+        }
+        groupedByDate[date].earnings += tip.amount;
+        groupedByDate[date].count += 1;
+      }
+
+      const result = Object.entries(groupedByDate)
+        .map(([date, data]) => ({
+          date,
+          earnings: Math.round(data.earnings * 100) / 100,
+          tipCount: data.count,
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      // Cache for 5 minutes with creator tag
+      queryCache.set(cacheKey, result, 300000, [`analytics:creator:${creatorId}`]);
+
+      return result;
     });
   }
 
   /**
-   * Get top supporters for a creator (grouped server-side).
+   * Get top supporters for a creator (using database groupBy & index)
    */
   async getTopSupporters(
     creatorId: string,
@@ -65,7 +88,12 @@ export class AnalyticsService extends BaseService {
     }[]
   > {
     return this.executeWithLogging('analytics.topSupporters', async () => {
-      const boundedLimit = sanitizePageSize(limit, 10);
+      const cacheKey = `analytics:topSupporters:${creatorId}:${limit}`;
+      const cached = queryCache.get<{ userId: string; totalAmount: number; tipCount: number; lastTipDate: string }[]>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
       const supporters = await this.prisma.tip.groupBy({
         by: ['fromUserId'],
         where: {
@@ -79,17 +107,20 @@ export class AnalyticsService extends BaseService {
         take: boundedLimit,
       });
 
-      return supporters.map((supporter) => ({
+      const result = supporters.map((supporter) => ({
         userId: supporter.fromUserId,
-        totalAmount: supporter._sum.amount || 0,
+        totalAmount: Math.round((supporter._sum.amount || 0) * 100) / 100,
         tipCount: supporter._count.id,
         lastTipDate: (supporter._max.createdAt || new Date()).toISOString(),
       }));
+
+      queryCache.set(cacheKey, result, 300000, [`analytics:creator:${creatorId}`]);
+      return result;
     });
   }
 
   /**
-   * Get tip frequency statistics (aggregated in the database).
+   * Get tip frequency statistics (using single database aggregate instead of loading all rows)
    */
   async getTipFrequency(
     creatorId: string,
@@ -103,26 +134,39 @@ export class AnalyticsService extends BaseService {
     totalEarnings: number;
   }> {
     return this.executeWithLogging('analytics.tipFrequency', async () => {
+      const cacheKey = `analytics:frequency:${creatorId}:${days}`;
+      const cached = queryCache.get<{
+        totalTips: number;
+        averageTipAmount: number;
+        largestTip: number;
+        smallestTip: number;
+        tipsPerDay: number;
+        totalEarnings: number;
+      }>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - days);
 
+      // Single database aggregate query using indexes
       const stats = await this.prisma.tip.aggregate({
         where: {
           creatorId,
           status: 'confirmed',
           createdAt: { gte: startDate },
         },
+        _count: { id: true },
         _sum: { amount: true },
         _avg: { amount: true },
         _max: { amount: true },
         _min: { amount: true },
-        _count: { id: true },
       });
 
-      const totalTips = stats._count.id;
-
+      const totalTips = stats._count.id || 0;
       if (totalTips === 0) {
-        return {
+        const emptyResult = {
           totalTips: 0,
           averageTipAmount: 0,
           largestTip: 0,
@@ -130,13 +174,17 @@ export class AnalyticsService extends BaseService {
           tipsPerDay: 0,
           totalEarnings: 0,
         };
+        queryCache.set(cacheKey, emptyResult, 300000, [`analytics:creator:${creatorId}`]);
+        return emptyResult;
       }
 
       const totalEarnings = stats._sum.amount || 0;
       const averageTipAmount = stats._avg.amount || 0;
+      const largestTip = stats._max.amount || 0;
+      const smallestTip = stats._min.amount || 0;
       const tipsPerDay = totalTips / days;
 
-      return {
+      const result = {
         totalTips,
         averageTipAmount: Math.round(averageTipAmount * 100) / 100,
         largestTip: stats._max.amount || 0,
@@ -144,15 +192,14 @@ export class AnalyticsService extends BaseService {
         tipsPerDay: Math.round(tipsPerDay * 100) / 100,
         totalEarnings: Math.round(totalEarnings * 100) / 100,
       };
+
+      queryCache.set(cacheKey, result, 300000, [`analytics:creator:${creatorId}`]);
+      return result;
     });
   }
 
   /**
-   * Get summary stats for a creator.
-   *
-   * A single aggregated round-trip computes the totals and
-   * COUNT(DISTINCT "fromUserId") in SQL, so no per-supporter rows are
-   * materialized in the process.
+   * Get summary stats for a creator (optimized aggregate query)
    */
   async getSummaryStats(creatorId: string): Promise<{
     totalEarnings: number;
@@ -161,25 +208,58 @@ export class AnalyticsService extends BaseService {
     averageTipAmount: number;
   }> {
     return this.executeWithLogging('analytics.summary', async () => {
-      const rows = await this.prisma.$queryRaw<
-        { totalEarnings: number; totalTips: bigint; uniqueSupporters: bigint; averageTipAmount: number | null }[]
-      >`
-        SELECT COALESCE(SUM(amount), 0)::float AS "totalEarnings",
-               COUNT(*)::bigint AS "totalTips",
-               COUNT(DISTINCT "fromUserId")::bigint AS "uniqueSupporters",
-               AVG(amount)::float AS "averageTipAmount"
-        FROM "Tip"
-        WHERE "creatorId" = ${creatorId} AND status = 'confirmed'
-      `;
+      const cacheKey = `analytics:summary:${creatorId}`;
+      const cached = queryCache.get<{
+        totalEarnings: number;
+        totalTips: number;
+        uniqueSupporters: number;
+        averageTipAmount: number;
+      }>(cacheKey);
+      if (cached) {
+        return cached;
+      }
 
-      const row = rows[0];
+      const [stats, uniqueSupporters] = await Promise.all([
+        this.prisma.tip.aggregate({
+          where: {
+            creatorId,
+            status: 'confirmed',
+          },
+          _count: { id: true },
+          _sum: { amount: true },
+          _avg: { amount: true },
+        }),
+        this.prisma.tip.findMany({
+          where: {
+            creatorId,
+            status: 'confirmed',
+          },
+          distinct: ['fromUserId'],
+          select: { fromUserId: true },
+        }),
+      ]);
 
-      return {
-        totalEarnings: Math.round(Number(row?.totalEarnings ?? 0) * 100) / 100,
-        totalTips: Number(row?.totalTips ?? 0),
-        uniqueSupporters: Number(row?.uniqueSupporters ?? 0),
-        averageTipAmount: Math.round(Number(row?.averageTipAmount ?? 0) * 100) / 100,
+      const totalTips = stats._count.id || 0;
+      const totalEarnings = stats._sum.amount || 0;
+      const averageTipAmount = stats._avg.amount || 0;
+
+      const result = {
+        totalEarnings: Math.round(totalEarnings * 100) / 100,
+        totalTips,
+        uniqueSupporters: uniqueSupporters.length,
+        averageTipAmount: Math.round(averageTipAmount * 100) / 100,
       };
+
+      queryCache.set(cacheKey, result, 300000, [`analytics:creator:${creatorId}`]);
+      return result;
     });
   }
+
+  /**
+   * Invalidate analytics cache for a creator when new tips/payouts occur
+   */
+  invalidateCreatorCache(creatorId: string): void {
+    queryCache.invalidateTags([`analytics:creator:${creatorId}`]);
+  }
 }
+

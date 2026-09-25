@@ -7,7 +7,9 @@ import { hashPassword, comparePasswords } from '../../utils/password';
 import { blacklistRefreshToken } from '../../utils/token-blacklist';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
+
+const uuidv4 = (): string => randomUUID();
 
 export class AuthService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -58,7 +60,7 @@ export class AuthService extends BaseService {
         throw new ValidationError('Invalid email or password');
       }
 
-      const jti = uuidv4();
+      const jti = randomUUID();
       
       const accessToken = generateAccessToken({
         userId: user.id,
@@ -113,7 +115,7 @@ export class AuthService extends BaseService {
       await blacklistRefreshToken(payload.jti, oldExpiresAt);
 
       // Issue new tokens with new JTI
-      const newJti = uuidv4();
+      const newJti = randomUUID();
       const newAccessToken = generateAccessToken({
         userId: user.id,
         email: user.email,

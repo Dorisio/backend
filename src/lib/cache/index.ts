@@ -5,20 +5,6 @@ import { config } from '../../config';
 
 type CacheOptions = { ttlMs?: number; prefix?: string };
 
-export enum CacheType {
-  USER = 'user',
-  CREATOR = 'creator',
-  TRENDING = 'trending',
-  ANALYTICS = 'analytics',
-}
-
-export const TTL_CONFIG: Record<CacheType, number> = {
-  [CacheType.USER]: 5 * 60 * 1000, // 5 minutes
-  [CacheType.CREATOR]: 10 * 60 * 1000, // 10 minutes
-  [CacheType.TRENDING]: 1 * 60 * 1000, // 1 minute
-  [CacheType.ANALYTICS]: 60 * 60 * 1000, // 1 hour
-};
-
 const memoryCache = new LRUCache<string, any>({
   max: config.CACHE_FALLBACK_MEMORY_SIZE,
   ttl: 1000 * 60 * 60, // default 1h
