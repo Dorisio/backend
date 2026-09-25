@@ -20,7 +20,9 @@
     "prisma:studio": "prisma studio",
     "db:migrate": "tsx src/db/run-migrations.ts --up",
     "db:migrate:dry-run": "tsx src/db/run-migrations.ts --dry-run",
-    "db:rollback": "tsx src/db/run-migrations.ts --down"
+    "db:rollback": "tsx src/db/run-migrations.ts --down",
+    "worker": "tsx src/lib/workers/index.ts",
+    "jobs:status": "tsx src/lib/jobs/cli-status.ts"
   },
   "dependencies": {
     "fastify": "^4.27.0",
@@ -47,7 +49,12 @@
     "prom-client": "^15.1.0",
     "redis": "^4.6.13",
     "uuid": "^14.0.2",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@fastify/helmet": "^11.1.1",
+    "mercurius": "^14.1.0",
+    "graphql": "^16.9.0",
+    "graphql-depth-limit": "^1.1.0",
+    "ioredis": "^5.4.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.3.0",
