@@ -17,7 +17,10 @@
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "db:migrate": "tsx src/db/run-migrations.ts --up",
+    "db:migrate:dry-run": "tsx src/db/run-migrations.ts --dry-run",
+    "db:rollback": "tsx src/db/run-migrations.ts --down"
   },
   "dependencies": {
     "fastify": "^4.27.0",
@@ -28,19 +31,23 @@
     "@fastify/jwt": "^7.2.4",
     "@fastify/swagger": "^8.14.0",
     "@fastify/swagger-ui": "^1.10.1",
-    "pino": "^8.17.2",
-    "pino-pretty": "^10.3.1",
-    "pg": "^8.11.3",
     "@prisma/client": "^5.17.0",
-    "jsonwebtoken": "^9.0.3",
-    "bcryptjs": "^2.4.3",
     "@stellar/stellar-sdk": "^12.3.0",
     "axios": "^1.7.2",
+    "bcryptjs": "^2.4.3",
     "bullmq": "^5.8.0",
-    "redis": "^4.6.13",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.27.0",
     "generic-pool": "^3.8.2",
+    "jsonwebtoken": "^9.0.3",
     "lru-cache": "^10.4.0",
-    "prom-client": "^15.1.0"
+    "pg": "^8.11.3",
+    "pino": "^8.17.2",
+    "pino-pretty": "^10.3.1",
+    "prom-client": "^15.1.0",
+    "redis": "^4.6.13",
+    "uuid": "^14.0.2",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@eslint/js": "^9.3.0",
@@ -53,10 +60,10 @@
     "eslint": "^9.3.0",
     "globals": "^15.0.0",
     "prettier": "^3.3.3",
+    "prisma": "^5.17.0",
     "tsx": "^4.17.0",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0",
-    "prisma": "^5.17.0"
+    "vitest": "^1.6.0"
   },
   "engines": {
     "node": ">=20.0.0"
