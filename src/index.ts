@@ -26,6 +26,7 @@ import { closeQueues } from './lib/queue';
 import redisPool from './lib/redisPool';
 import { emailNotificationWorker } from './lib/workers/email-notification.worker';
 import { setServiceState } from './services/health.service';
+import { initTokenBlacklist, closeTokenBlacklist } from './utils/token-blacklist';
 
 const app = Fastify({
   genReqId: (request) => {
@@ -181,6 +182,7 @@ const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
     await closeQueues();
     await closeDatabase();
     await prisma.$disconnect();
+    closeTokenBlacklist();
     app.log.info('Database connections closed');
 
     clearTimeout(forceExitTimer);
@@ -203,6 +205,8 @@ process.on('SIGINT', () => {
 const bootstrap = async (): Promise<void> => {
   await registerSecurityPlugins(app);
   await app.register(cookie);
+  
+  await initTokenBlacklist(prisma);
 
   // API versioning (#25): validates an optional API-Version header against
   // SUPPORTED_API_VERSIONS and records per-version usage metrics. Existing
@@ -260,6 +264,7 @@ const handleShutdown = async (signal: string): Promise<void> => {
     await closeDatabase();
     await prisma.$disconnect();
     await closeQueues().catch(() => undefined);
+    closeTokenBlacklist();
     app.log.info('Graceful shutdown complete');
     process.exit(0);
   } catch (err) {
