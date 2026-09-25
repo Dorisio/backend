@@ -221,7 +221,13 @@ export class CacheService {
     }
   }
 
-  private async acquireLock(lockKey: string): Promise<boolean> {
+  /**
+   * Public distributed lock primitive (SET NX EX under the hood) — used
+   * internally by getWithLock() and reused directly by
+   * src/lib/idempotency.ts (#24) to serialize concurrent requests sharing
+   * the same Idempotency-Key.
+   */
+  async acquireLock(lockKey: string): Promise<boolean> {
     if (!this.isAvailable()) {
       return false;
     }
@@ -239,7 +245,7 @@ export class CacheService {
     }
   }
 
-  private async releaseLock(lockKey: string): Promise<void> {
+  async releaseLock(lockKey: string): Promise<void> {
     if (!this.isAvailable()) {
       return;
     }
