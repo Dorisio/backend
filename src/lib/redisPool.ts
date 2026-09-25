@@ -7,7 +7,13 @@ type PooledRedis = RedisClientType;
 
 const factory: genericPool.Factory<PooledRedis> = {
   create: async () => {
-    const client: RedisClientType = createClient({ url: config.REDIS_URL });
+    const client: RedisClientType = createClient({
+      url: config.REDIS_URL,
+      socket: {
+        timeout: Math.min(config.REDIS_CONNECTION_TIMEOUT_MS, 3000),
+        reconnectStrategy: false,
+      },
+    });
     client.on('error', (err) => console.error('Redis client error', err));
     await client.connect();
     return client;
@@ -54,7 +60,7 @@ export function startRedisHealthCheck() {
 
 export function stopRedisHealthCheck() {
   if (!healthTimer) return;
-  clearInterval(healthTimer);
+  clearInterval(healthTimer as unknown as NodeJS.Timeout);
   healthTimer = null;
 }
 

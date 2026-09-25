@@ -21,6 +21,7 @@ import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import redisPool, { startRedisHealthCheck } from './lib/redisPool';
 import cache from './lib/cache';
+import { setServiceState } from './services/health.service';
 
 const app = Fastify({
   logger: {
@@ -39,6 +40,7 @@ app.register(cors, {
   origin: true,
   credentials: true,
 });
+app.register(cookie);
 
 app.register(cookie, {
   secret: config.JWT_SECRET,
@@ -159,6 +161,16 @@ const start = async (): Promise<void> => {
       } catch (dbErr) {
         app.log.warn({ dbErr }, 'Database pool initialization warning, continuing startup');
       }
+    }
+
+    // Start Redis health check
+    startRedisHealthCheck();
+
+    // Initialize cache warming (non-blocking)
+    if (config.DATABASE_URL) {
+      initializeCacheWarming(prisma).catch((err) => {
+        app.log.warn({ err }, 'Cache warming failed, continuing startup');
+      });
     }
 
     await app.listen({ port: config.PORT, host: '0.0.0.0' });

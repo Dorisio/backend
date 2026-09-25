@@ -44,7 +44,7 @@ describe.skipIf(!isDbAvailable)('Tip Flow Integration Tests', () => {
   });
 
   beforeEach(async (ctx) => {
-    if (!isDbAvailable) {
+    if (!isDbAvailable || !prisma) {
       ctx.skip();
       return;
     }
