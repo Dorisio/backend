@@ -151,4 +151,40 @@ export const registerCreatorPayoutRoutes = (app: FastifyInstance, prisma: Prisma
       }
     }
   );
+
+  // GET /api/v1/creators/payouts/history - Get payout history
+  app.get<{ Querystring: { limit?: string } }>(
+    '/api/v1/creators/payouts/history',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+
+        if (!user) {
+          throw new Error('User not found in request');
+        }
+
+        const creator = await prisma.creator.findUnique({
+          where: { userId: user.userId },
+        });
+
+        if (!creator) {
+          reply.code(404).send(formatError('Creator profile not found', 'NOT_FOUND'));
+          return;
+        }
+
+        const query = request.query as { limit?: string };
+        const limit = query.limit ? Math.min(parseInt(query.limit), 100) : 20;
+
+        const result = await payoutService.getPayoutHistory(creator.id, limit);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
 };

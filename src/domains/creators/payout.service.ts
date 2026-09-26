@@ -3,6 +3,9 @@ import { BaseService } from '../../services/base.service';
 import type { CreatorPayoutRequest } from './creator.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
+import { getStellarClient } from '../../lib/stellar/client';
+import * as StellarSdk from '@stellar/stellar-sdk';
+import { config } from '../../config/env';
 
 export class PayoutService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -11,12 +14,15 @@ export class PayoutService extends BaseService {
 
   /**
    * Process payout from pending balance to total earnings
-   * This moves pendingBalance to processed payout
+   * This creates a payout record and queues it for processing
    */
   async processPayout(creatorId: string, data: CreatorPayoutRequest): Promise<any> {
     return this.executeWithLogging('payout.process', async () => {
       const creator = await this.prisma.creator.findUnique({
         where: { id: creatorId },
+        include: {
+          user: true,
+        },
       });
 
       if (!creator) {
@@ -30,23 +36,266 @@ export class PayoutService extends BaseService {
         );
       }
 
-      // Reduce pending balance
-      const updatedCreator = await this.prisma.creator.update({
-        where: { id: creatorId },
-        data: {
-          pendingBalance: {
-            decrement: data.amount,
-          },
+      // Get creator's verified wallet
+      const wallet = await this.prisma.wallet.findFirst({
+        where: {
+          userId: creator.userId,
+          verified: true,
         },
       });
 
-      logger.info(`Payout processed for creator ${creatorId}: ${data.amount}`);
+      if (!wallet) {
+        throw new ValidationError('No verified wallet found. Please link and verify a wallet first.');
+      }
+
+      // Validate minimum payout amount (configurable, default $10 or 50 XLM)
+      const minimumPayout = config.MIN_PAYOUT_AMOUNT || 50;
+      if (data.amount < minimumPayout) {
+        throw new ValidationError(
+          `Payout amount must be at least ${minimumPayout} XLM`
+        );
+      }
+
+      // Create payout record
+      const payout = await this.prisma.payout.create({
+        data: {
+          creatorId,
+          amount: data.amount,
+          status: 'pending' as any,
+          walletAddress: wallet.publicKey,
+        },
+      });
+
+      logger.info(`Payout request created for creator ${creatorId}: ${data.amount} to ${wallet.publicKey}`);
+
+      // Queue payout for processing (in production, this would go to a worker queue)
+      // For now, process synchronously for simplicity
+      await this.executePayoutTransaction(payout.id);
 
       return {
-        id: creatorId,
-        pendingBalance: updatedCreator.pendingBalance,
-        payoutAmount: data.amount,
+        id: payout.id,
+        amount: payout.amount,
+        status: payout.status,
+        walletAddress: payout.walletAddress,
       };
+    });
+  }
+
+  /**
+   * Execute the actual Stellar transaction for a payout
+   * This is called by the worker queue in production
+   */
+  private async executePayoutTransaction(payoutId: string): Promise<void> {
+    return this.executeWithLogging('payout.executeTransaction', async () => {
+      const payout = await this.prisma.payout.findUnique({
+        where: { id: payoutId },
+        include: {
+          creator: true,
+        },
+      });
+
+      if (!payout) {
+        throw new NotFoundError('Payout');
+      }
+
+      if (payout.status !== 'pending') {
+        logger.warn(`Payout ${payoutId} is not in pending state: ${payout.status}`);
+        return;
+      }
+
+      // Update status to processing
+      await this.prisma.payout.update({
+        where: { id: payoutId },
+        data: { status: 'processing' as any },
+      });
+
+      try {
+        const stellarClient = getStellarClient();
+        const serverKeypair = stellarClient.getServerKeypair();
+
+        if (!serverKeypair) {
+          throw new Error('Server keypair not configured - payout unavailable');
+        }
+
+        const server = stellarClient.getServer();
+        const networkPassphrase = stellarClient.getNetworkPassphrase();
+
+        // Load server account
+        const serverAccount = await server.loadAccount(serverKeypair.publicKey());
+
+        // Build payment transaction
+        const transaction = new StellarSdk.TransactionBuilder(serverAccount as any, {
+          fee: StellarSdk.BASE_FEE,
+          networkPassphrase: networkPassphrase,
+          timebounds: {
+            minTime: 0,
+            maxTime: Math.floor(Date.now() / 1000) + 300, // 5 minute validity
+          },
+        })
+          .addOperation(
+            StellarSdk.Operation.payment({
+              destination: payout.walletAddress,
+              asset: StellarSdk.Asset.native(),
+              amount: payout.amount.toString(),
+            })
+          )
+          .build();
+
+        // Sign with server key
+        transaction.sign(serverKeypair);
+
+        const transactionEnvelope = transaction.toEnvelope().toXDR() as any;
+
+        // Submit transaction
+        const result = await stellarClient.submitTransaction(transactionEnvelope);
+
+        logger.info(`Payout transaction submitted successfully: ${result.id}`);
+
+        // Update payout with transaction hash and mark as completed
+        await this.prisma.payout.update({
+          where: { id: payoutId },
+          data: {
+            status: 'completed' as any,
+            transactionHash: result.id,
+          },
+        });
+
+        // Decrement creator's pending balance
+        await this.prisma.creator.update({
+          where: { id: payout.creatorId },
+          data: {
+            pendingBalance: {
+              decrement: payout.amount,
+            },
+          },
+        });
+
+        logger.info(`Payout completed for creator ${payout.creatorId}: ${payout.amount} XLM`);
+
+        // Dispatch webhook event
+        await this.dispatchPayoutWebhook(payout, result.id);
+
+      } catch (error: any) {
+        logger.error(`Payout transaction failed for ${payoutId}:`, error);
+
+        // Update payout status to failed with error message
+        await this.prisma.payout.update({
+          where: { id: payoutId },
+          data: {
+            status: 'failed' as any,
+            errorMessage: error.message || 'Unknown error',
+            retryCount: {
+              increment: 1,
+            },
+            nextRetryAt: this.calculateNextRetry(payout.retryCount + 1),
+          },
+        });
+
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * Calculate next retry time with exponential backoff
+   */
+  private calculateNextRetry(retryCount: number): Date {
+    const baseDelay = 5 * 60 * 1000; // 5 minutes
+    const maxDelay = 24 * 60 * 60 * 1000; // 24 hours
+    const delay = Math.min(baseDelay * Math.pow(2, retryCount), maxDelay);
+    return new Date(Date.now() + delay);
+  }
+
+  /**
+   * Dispatch webhook event for completed payout
+   */
+  private async dispatchPayoutWebhook(payout: any, transactionHash: string): Promise<void> {
+    try {
+      const webhooks = await this.prisma.webhook.findMany({
+        where: {
+          creatorId: payout.creatorId,
+          active: true,
+        },
+      });
+
+      for (const webhook of webhooks) {
+        const events = webhook.events as string[];
+        if (events.includes('payout.completed')) {
+          await this.prisma.webhookEvent.create({
+            data: {
+              webhookId: webhook.id,
+              eventType: 'payout.completed',
+              payload: JSON.stringify({
+                payoutId: payout.id,
+                amount: payout.amount,
+                transactionHash,
+                walletAddress: payout.walletAddress,
+                timestamp: new Date().toISOString(),
+              }),
+              status: 'pending',
+            },
+          });
+        }
+      }
+
+      logger.info(`Webhook events dispatched for payout ${payout.id}`);
+    } catch (error) {
+      logger.error(`Failed to dispatch webhook for payout ${payout.id}:`, error);
+      // Don't fail the payout if webhook dispatch fails
+    }
+  }
+
+  /**
+   * Retry failed payouts
+   * This is called by a scheduled worker
+   */
+  async retryFailedPayouts(): Promise<void> {
+    return this.executeWithLogging('payout.retryFailed', async () => {
+      const failedPayouts = await this.prisma.payout.findMany({
+        where: {
+          status: 'failed' as any,
+          nextRetryAt: {
+            lte: new Date(),
+          },
+          retryCount: {
+            lt: 5, // Max 5 retries
+          },
+        },
+        take: 10, // Process in batches
+      });
+
+      logger.info(`Retrying ${failedPayouts.length} failed payouts`);
+
+      for (const payout of failedPayouts) {
+        try {
+          await this.executePayoutTransaction(payout.id);
+        } catch (error) {
+          logger.error(`Failed to retry payout ${payout.id}:`, error);
+        }
+      }
+    });
+  }
+
+  /**
+   * Get payout history for a creator
+   */
+  async getPayoutHistory(creatorId: string, limit = 20): Promise<any[]> {
+    return this.executeWithLogging('payout.getHistory', async () => {
+      const payouts = await this.prisma.payout.findMany({
+        where: { creatorId },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      });
+
+      return payouts.map((payout) => ({
+        id: payout.id,
+        amount: payout.amount,
+        status: payout.status,
+        transactionHash: payout.transactionHash,
+        walletAddress: payout.walletAddress,
+        createdAt: payout.createdAt.toISOString(),
+        errorMessage: payout.errorMessage,
+      }));
     });
   }
 

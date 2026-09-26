@@ -48,15 +48,14 @@ export const registerAnalyticsRoutes = (app: FastifyInstance, prisma: PrismaClie
   );
 
   // GET /api/v1/analytics/earnings - Earnings over time
-  app.get<{ Querystring: { days?: string } }>(
+  app.get<{ Querystring: { days?: string; granularity?: string } }>(
     '/api/v1/analytics/earnings',
     {
       preHandler: authMiddleware,
-      schema: {
-        
-        
+      schema {
 
-        
+
+
         querystring: {
           type: 'object',
           properties: {
@@ -64,6 +63,11 @@ export const registerAnalyticsRoutes = (app: FastifyInstance, prisma: PrismaClie
               type: 'string',
               default: '30',
 
+            },
+            granularity: {
+              type: 'string',
+              enum: ['daily', 'weekly', 'monthly'],
+              default: 'daily',
             },
           },
         },
@@ -87,15 +91,16 @@ export const registerAnalyticsRoutes = (app: FastifyInstance, prisma: PrismaClie
           return;
         }
 
-        const query = request.query as { days?: string };
+        const query = request.query as { days?: string; granularity?: string };
         const days = query.days ? parseInt(query.days) : 30;
+        const granularity = (query.granularity as 'daily' | 'weekly' | 'monthly') || 'daily';
 
         if (days < 1 || days > 365) {
           reply.code(400).send(formatError('Days must be between 1 and 365', 'INVALID_RANGE'));
           return;
         }
 
-        const result = await analyticsService.getEarningsOverTime(creator.id, days);
+        const result = await analyticsService.getEarningsOverTime(creator.id, days, granularity);
         reply.send(formatSuccess(result));
       } catch (error) {
         if (error instanceof AppError) {

@@ -9,11 +9,45 @@ import {
   LoginRequest,
   RefreshTokenRequest,
 } from './auth.types';
-import { formatSuccess } from '../../types/response';
+import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { blacklistToken } from '../../utils/token-blacklist';
 import { verifyToken } from '../../utils/jwt';
 import { config } from '../../config/env';
+import { z } from 'zod';
+import { ValidationError } from '../../utils/errors';
+
+const VerifyEmailSchema = z.object({
+  token: z.string().min(1, 'Verification token is required'),
+});
+
+const ResendVerificationSchema = z.object({
+  email: z.string().email('Invalid email format'),
+});
+
+/**
+ * Parse expiry string like "7d", "24h", "3600" to milliseconds
+ */
+function parseExpiryToMs(expiryStr: string): number {
+  const match = expiryStr.match(/^(\d+)([dhms]?)$/);
+  if (!match) return 7 * 24 * 60 * 60 * 1000; // Default 7 days
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2] || 's';
+
+  switch (unit) {
+    case 'd':
+      return value * 24 * 60 * 60 * 1000;
+    case 'h':
+      return value * 60 * 60 * 1000;
+    case 'm':
+      return value * 60 * 1000;
+    case 's':
+      return value * 1000;
+    default:
+      return value * 1000;
+  }
+}
 
 /**
  * Parse expiry string like "7d", "24h", "3600" to milliseconds
@@ -239,13 +273,103 @@ export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): 
         const expiresAt = new Date(Date.now() + expiryMs);
         await blacklistToken(token, expiresAt);
       }
-      
+
       // Clear refresh token cookie
       reply.clearCookie('refreshToken', {
         path: '/',
       });
-      
+
       reply.send(formatSuccess({ message: 'Logged out successfully' }));
+    }
+  );
+
+  // POST /api/v1/auth/verify-email - Verify email with token
+  app.post<{ Body: { token: string } }>(
+    '/api/v1/auth/verify-email',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string', description: 'Verification token from email' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  success: { type: 'boolean' },
+                  message: { type: 'string' },
+                },
+              },
+            },
+          },
+          400: { description: 'Invalid or expired token' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const body = VerifyEmailSchema.parse(request.body);
+        const result = await authService.verifyEmail(body.token);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          reply.code(400).send(formatError('Verification failed', 'VERIFICATION_ERROR'));
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/auth/resend-verification - Resend verification email
+  app.post<{ Body: { email: string } }>(
+    '/api/v1/auth/resend-verification',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['email'],
+          properties: {
+            email: { type: 'string', format: 'email', description: 'User email' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  success: { type: 'boolean' },
+                  message: { type: 'string' },
+                },
+              },
+            },
+          },
+          400: { description: 'Invalid email or already verified' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const body = ResendVerificationSchema.parse(request.body);
+        const result = await authService.resendVerificationEmail(body.email);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          reply.code(400).send(formatError('Failed to resend verification email', 'RESEND_ERROR'));
+        }
+      }
     }
   );
 };

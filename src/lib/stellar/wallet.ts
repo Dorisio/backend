@@ -5,6 +5,7 @@ import { buildChallengeTransaction, verifyChallengeTransaction } from './transac
 import { getStellarClient } from './client';
 import { logger } from '../../utils/logger';
 import { config } from '../../config/env';
+import { withRedis } from '../redisPool';
 
 export interface WalletNonce {
   nonce: string;
@@ -13,11 +14,62 @@ export interface WalletNonce {
 }
 
 /**
- * In-memory store for nonces
- * In production, consider using Redis or database for persistence across restarts
+ * In-memory store for nonces (fallback when Redis is unavailable)
  * Each nonce is tied to a specific public key and expires after WALLET_NONCE_EXPIRY seconds
  */
 const nonceStore = new Map<string, WalletNonce>();
+
+/**
+ * Store nonce in Redis with expiration, fallback to in-memory
+ */
+async function storeNonce(nonce: string, publicKey: string, expiresAt: number): Promise<void> {
+  const nonceData = JSON.stringify({ nonce, publicKey, expiresAt });
+  const ttl = Math.floor((expiresAt - Date.now()) / 1000);
+
+  await withRedis(
+    async (client) => {
+      await client.setEx(`wallet:nonce:${nonce}`, ttl, nonceData);
+    },
+    async () => {
+      // Fallback to in-memory storage
+      nonceStore.set(nonce, { nonce, publicKey, expiresAt });
+    }
+  );
+}
+
+/**
+ * Retrieve nonce from Redis, fallback to in-memory
+ */
+async function retrieveNonce(nonce: string): Promise<WalletNonce | null> {
+  return await withRedis(
+    async (client) => {
+      const data = await client.get(`wallet:nonce:${nonce}`);
+      if (data) {
+        return JSON.parse(data) as WalletNonce;
+      }
+      return null;
+    },
+    async () => {
+      // Fallback to in-memory storage
+      return nonceStore.get(nonce) || null;
+    }
+  );
+}
+
+/**
+ * Delete nonce from Redis and in-memory
+ */
+async function deleteNonce(nonce: string): Promise<void> {
+  await withRedis(
+    async (client) => {
+      await client.del(`wallet:nonce:${nonce}`);
+    },
+    async () => {
+      // Fallback to in-memory storage
+      nonceStore.delete(nonce);
+    }
+  );
+}
 
 /**
  * Generate a nonce for wallet linking challenge
@@ -40,15 +92,11 @@ export async function generateWalletNonce(publicKey: string): Promise<string> {
     const nonce = randomBytes(32).toString('hex');
     const expiresAt = Date.now() + config.WALLET_NONCE_EXPIRY * 1000;
 
-    // Store nonce with expiration
-    nonceStore.set(nonce, {
-      nonce,
-      publicKey,
-      expiresAt,
-    });
+    // Store nonce with expiration (Redis with fallback to in-memory)
+    await storeNonce(nonce, publicKey, expiresAt);
 
     // Clean up expired nonces periodically
-    cleanupExpiredNonces();
+    await cleanupExpiredNonces();
 
     logger.debug(
       `Nonce generated successfully for ${publicKey}: ${nonce.substring(0, 8)}...`
@@ -70,7 +118,7 @@ export async function generateWalletNonce(publicKey: string): Promise<string> {
  */
 export async function getWalletChallenge(nonce: string): Promise<string> {
   try {
-    const storedNonce = nonceStore.get(nonce);
+    const storedNonce = await retrieveNonce(nonce);
 
     if (!storedNonce) {
       logger.warn(`Nonce not found: ${nonce.substring(0, 8)}...`);
@@ -80,7 +128,7 @@ export async function getWalletChallenge(nonce: string): Promise<string> {
     // Check if nonce has expired
     if (storedNonce.expiresAt < Date.now()) {
       logger.warn(`Nonce expired: ${nonce.substring(0, 8)}...`);
-      nonceStore.delete(nonce);
+      await deleteNonce(nonce);
       throw new Error('Nonce has expired. Please generate a new one.');
     }
 
@@ -140,7 +188,7 @@ export async function verifyAndLinkWallet(
     );
 
     // Step 1: Validate nonce
-    const storedNonce = nonceStore.get(nonce);
+    const storedNonce = await retrieveNonce(nonce);
 
     if (!storedNonce) {
       logger.warn(`Nonce not found for wallet verification: ${nonce.substring(0, 8)}...`);
@@ -149,7 +197,7 @@ export async function verifyAndLinkWallet(
 
     if (storedNonce.expiresAt < Date.now()) {
       logger.warn(`Nonce expired for wallet verification: ${nonce.substring(0, 8)}...`);
-      nonceStore.delete(nonce);
+      await deleteNonce(nonce);
       throw new Error('Nonce has expired. Please start over with a new nonce.');
     }
 
@@ -227,7 +275,7 @@ export async function verifyAndLinkWallet(
     }
 
     // Step 6: Clean up nonce (one-time use)
-    nonceStore.delete(nonce);
+    await deleteNonce(nonce);
 
     logger.info(
       `Wallet successfully verified and linked: ${publicKey} -> user ${userId}`
@@ -441,16 +489,37 @@ export async function updateWalletName(
  * Clean up expired nonces from memory
  * Called periodically to prevent memory leaks
  */
-function cleanupExpiredNonces(): void {
+async function cleanupExpiredNonces(): Promise<void> {
   const now = Date.now();
   let cleaned = 0;
 
+  // Clean up in-memory nonces
   for (const [key, value] of nonceStore.entries()) {
     if (value.expiresAt < now) {
       nonceStore.delete(key);
       cleaned++;
     }
   }
+
+  // Clean up Redis nonces (optional, as Redis has built-in expiration)
+  await withRedis(
+    async (client) => {
+      const keys = await client.keys('wallet:nonce:*');
+      for (const key of keys) {
+        const data = await client.get(key);
+        if (data) {
+          const nonceData = JSON.parse(data) as WalletNonce;
+          if (nonceData.expiresAt < now) {
+            await client.del(key);
+            cleaned++;
+          }
+        }
+      }
+    },
+    async () => {
+      // Redis unavailable, skip cleanup
+    }
+  );
 
   if (cleaned > 0) {
     logger.debug(`Cleaned up ${cleaned} expired wallet nonces`);
@@ -466,9 +535,9 @@ function cleanupExpiredNonces(): void {
 export function startNonceCleanupJob(): () => void {
   logger.info('Starting background job: wallet nonce cleanup (every 5 minutes)');
 
-  const intervalId = setInterval(() => {
+  const intervalId = setInterval(async () => {
     try {
-      cleanupExpiredNonces();
+      await cleanupExpiredNonces();
     } catch (error) {
       logger.error('Error in nonce cleanup job:', error);
     }
