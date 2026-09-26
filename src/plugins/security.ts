@@ -60,7 +60,14 @@ export async function registerSecurityPlugins(app: FastifyInstance): Promise<voi
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    exposedHeaders: ['X-Request-Id'],
+    // Rate-limit metadata must be exposed for browsers to read it (#1).
+    exposedHeaders: [
+      'X-Request-Id',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'Retry-After',
+    ],
     maxAge: config.CORS_MAX_AGE,
     preflight: true,
     strictPreflight: true,

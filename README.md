@@ -147,6 +147,18 @@ Prometheus-compatible metrics for production monitoring:
 
 **Files:** `src/lib/metrics.ts`, `src/routes/metrics.routes.ts`
 
+### 6. Rate Limiting
+
+Every route is rate limited by class (`public` 100/min, `authenticated` 300/min
+per user, `sensitive` 10/min). Health probes are exempt. Classes, limits and
+exemptions are configured centrally in `src/config/rate-limit.ts`, and 429
+responses carry `X-RateLimit-*` and `Retry-After` headers. Set `TRUST_PROXY`
+when running behind a reverse proxy.
+
+See [docs/RATE_LIMITING.md](docs/RATE_LIMITING.md).
+
+**Files:** `src/config/rate-limit.ts`, `src/plugins/rateLimit.ts`
+
 ## API Routes
 
 ### Authentication
@@ -231,6 +243,11 @@ JWT_EXPIRE=24h
 
 # Admin
 ADMIN_WALLET_ADDRESS=...
+
+# Reverse proxy / rate limiting (see docs/RATE_LIMITING.md)
+TRUST_PROXY=false|<hop count>|<proxy IPs/CIDRs>
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_STORE=memory|redis
 ```
 
 ## Deployment

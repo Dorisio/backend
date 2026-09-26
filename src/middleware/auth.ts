@@ -4,6 +4,7 @@ import { UnauthorizedError } from '../utils/errors';
 import { isTokenBlacklisted } from '../utils/token-blacklist';
 import { config } from '../config';
 import { setRequestContextUserId } from '../lib/requestContext';
+import { registerAuthGuard } from './auth-guards';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -45,6 +46,8 @@ export const authMiddleware = async (
     throw new UnauthorizedError('Invalid token');
   }
 };
+
+registerAuthGuard(authMiddleware);
 
 export const optionalAuthMiddleware = async (
   request: FastifyRequest,

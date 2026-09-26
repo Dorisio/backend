@@ -92,6 +92,23 @@ const EnvSchema = z.object({
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
   SENDGRID_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().email().optional(),
+  // Reverse proxy trust (see docs/RATE_LIMITING.md). Controls how request.ip
+  // is derived from X-Forwarded-For. `false` (default) ignores forwarded
+  // headers; a number trusts that many proxy hops; otherwise a comma
+  // separated list of trusted proxy IPs/CIDRs.
+  TRUST_PROXY: z.string().default('false'),
+  // API rate limiting (see src/config/rate-limit.ts for policies)
+  RATE_LIMIT_ENABLED: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
+  RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
+  RATE_LIMIT_PUBLIC_MAX: z.string().transform(Number).default('100'),
+  RATE_LIMIT_PUBLIC_WINDOW_MS: z.string().transform(Number).default('60000'),
+  RATE_LIMIT_AUTHENTICATED_MAX: z.string().transform(Number).default('300'),
+  RATE_LIMIT_AUTHENTICATED_WINDOW_MS: z.string().transform(Number).default('60000'),
+  RATE_LIMIT_SENSITIVE_MAX: z.string().transform(Number).default('10'),
+  RATE_LIMIT_SENSITIVE_WINDOW_MS: z.string().transform(Number).default('60000'),
 });
 
 type Environment = z.infer<typeof EnvSchema>;
