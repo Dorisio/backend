@@ -9,10 +9,12 @@ export class AnalyticsService extends BaseService {
 
   /**
    * Get earnings over time for a creator (using DB-level aggregation & 5m caching)
+   * Supports daily, weekly, and monthly aggregation
    */
   async getEarningsOverTime(
     creatorId: string,
-    days = 30
+    days = 30,
+    granularity: 'daily' | 'weekly' | 'monthly' = 'daily'
   ): Promise<
     {
       date: string;
@@ -21,7 +23,7 @@ export class AnalyticsService extends BaseService {
     }[]
   > {
     return this.executeWithLogging('analytics.earningsOverTime', async () => {
-      const cacheKey = `analytics:earnings:${creatorId}:${days}`;
+      const cacheKey = `analytics:earnings:${creatorId}:${days}:${granularity}`;
       const cached = queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
       if (cached) {
         return cached;
@@ -46,16 +48,32 @@ export class AnalyticsService extends BaseService {
         },
       });
 
-      // Group by date
+      // Group by date based on granularity
       const groupedByDate: Record<string, { earnings: number; count: number }> = {};
 
       for (const tip of tips) {
-        const date = tip.createdAt.toISOString().split('T')[0];
-        if (!groupedByDate[date]) {
-          groupedByDate[date] = { earnings: 0, count: 0 };
+        let dateKey: string;
+        const date = tip.createdAt;
+
+        switch (granularity) {
+          case 'daily':
+            dateKey = date.toISOString().split('T')[0];
+            break;
+          case 'weekly':
+            const weekStart = new Date(date);
+            weekStart.setDate(date.getDate() - date.getDay());
+            dateKey = weekStart.toISOString().split('T')[0];
+            break;
+          case 'monthly':
+            dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+            break;
         }
-        groupedByDate[date].earnings += tip.amount;
-        groupedByDate[date].count += 1;
+
+        if (!groupedByDate[dateKey]) {
+          groupedByDate[dateKey] = { earnings: 0, count: 0 };
+        }
+        groupedByDate[dateKey].earnings += tip.amount;
+        groupedByDate[dateKey].count += 1;
       }
 
       const result = Object.entries(groupedByDate)
@@ -104,7 +122,7 @@ export class AnalyticsService extends BaseService {
         _count: { id: true },
         _max: { createdAt: true },
         orderBy: [{ _sum: { amount: 'desc' } }, { fromUserId: 'asc' }],
-        take: boundedLimit,
+        take: limit,
       });
 
       const result = supporters.map((supporter) => ({
@@ -121,6 +139,7 @@ export class AnalyticsService extends BaseService {
 
   /**
    * Get tip frequency statistics (using single database aggregate instead of loading all rows)
+   * Enhanced with trend analysis and peak day detection
    */
   async getTipFrequency(
     creatorId: string,
@@ -132,6 +151,9 @@ export class AnalyticsService extends BaseService {
     smallestTip: number;
     tipsPerDay: number;
     totalEarnings: number;
+    growthRate: number;
+    peakDay: string | null;
+    peakDayTips: number;
   }> {
     return this.executeWithLogging('analytics.tipFrequency', async () => {
       const cacheKey = `analytics:frequency:${creatorId}:${days}`;
@@ -142,6 +164,9 @@ export class AnalyticsService extends BaseService {
         smallestTip: number;
         tipsPerDay: number;
         totalEarnings: number;
+        growthRate: number;
+        peakDay: string | null;
+        peakDayTips: number;
       }>(cacheKey);
       if (cached) {
         return cached;
@@ -173,6 +198,9 @@ export class AnalyticsService extends BaseService {
           smallestTip: 0,
           tipsPerDay: 0,
           totalEarnings: 0,
+          growthRate: 0,
+          peakDay: null,
+          peakDayTips: 0,
         };
         queryCache.set(cacheKey, emptyResult, 300000, [`analytics:creator:${creatorId}`]);
         return emptyResult;
@@ -184,6 +212,61 @@ export class AnalyticsService extends BaseService {
       const smallestTip = stats._min.amount || 0;
       const tipsPerDay = totalTips / days;
 
+      // Calculate growth rate (compare last 7 days to previous 7 days)
+      const last7Days = new Date();
+      last7Days.setDate(last7Days.getDate() - 7);
+      const previous7Days = new Date(last7Days);
+      previous7Days.setDate(previous7Days.getDate() - 7);
+
+      const [recentTips, previousTips] = await Promise.all([
+        this.prisma.tip.count({
+          where: {
+            creatorId,
+            status: 'confirmed',
+            createdAt: { gte: last7Days },
+          },
+        }),
+        this.prisma.tip.count({
+          where: {
+            creatorId,
+            status: 'confirmed',
+            createdAt: { gte: previous7Days, lt: last7Days },
+          },
+        }),
+      ]);
+
+      const growthRate = previousTips > 0
+        ? ((recentTips - previousTips) / previousTips) * 100
+        : 0;
+
+      // Find peak day
+      const tipsByDay = await this.prisma.tip.findMany({
+        where: {
+          creatorId,
+          status: 'confirmed',
+          createdAt: { gte: startDate },
+        },
+        select: {
+          createdAt: true,
+        },
+      });
+
+      // Group by date string and find peak
+      const dayCounts: Record<string, number> = {};
+      for (const tip of tipsByDay) {
+        const dateStr = tip.createdAt.toISOString().split('T')[0];
+        dayCounts[dateStr] = (dayCounts[dateStr] || 0) + 1;
+      }
+
+      let peakDay: string | null = null;
+      let peakDayTips = 0;
+      for (const [date, count] of Object.entries(dayCounts)) {
+        if (count > peakDayTips) {
+          peakDayTips = count;
+          peakDay = date;
+        }
+      }
+
       const result = {
         totalTips,
         averageTipAmount: Math.round(averageTipAmount * 100) / 100,
@@ -191,6 +274,9 @@ export class AnalyticsService extends BaseService {
         smallestTip: stats._min.amount || 0,
         tipsPerDay: Math.round(tipsPerDay * 100) / 100,
         totalEarnings: Math.round(totalEarnings * 100) / 100,
+        growthRate: Math.round(growthRate * 100) / 100,
+        peakDay,
+        peakDayTips,
       };
 
       queryCache.set(cacheKey, result, 300000, [`analytics:creator:${creatorId}`]);

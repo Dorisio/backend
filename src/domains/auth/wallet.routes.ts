@@ -54,16 +54,16 @@ const UpdateWalletNameSchema = z.object({
 
 export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   /**
-   * POST /api/v1/wallet/nonce
-   * Generate a nonce for wallet verification challenge
+   * POST /api/v1/auth/wallet/challenge
+   * Generate a nonce and challenge transaction for wallet verification
    * User will use this nonce with their Freighter wallet
    *
    * Requires: authenticated user
    * Body: { publicKey: string }
-   * Returns: { nonce: string, expiresIn: number (seconds) }
+   * Returns: { nonce: string, challenge: string (transaction XDR), expiresIn: number (seconds) }
    */
   app.post<{ Body: GenerateNonceRequest }>(
-    '/api/v1/wallet/nonce',
+    '/api/v1/auth/wallet/challenge',
     { preHandler: authMiddleware },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -75,16 +75,21 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
         const body = GenerateNonceSchema.parse(request.body);
 
         logger.debug(
-          `Generating nonce for wallet verification: ${body.publicKey} (user: ${user.userId})`
+          `Generating wallet challenge for: ${body.publicKey} (user: ${user.userId})`
         );
 
+        // Generate nonce
         const nonce = await generateWalletNonce(body.publicKey);
+
+        // Get challenge transaction
+        const challengeTransaction = await getWalletChallenge(nonce);
 
         reply.code(201).send(
           formatSuccess({
             nonce,
+            challenge: challengeTransaction,
             expiresIn: 600, // 10 minutes (config.WALLET_NONCE_EXPIRY)
-            message: 'Sign this nonce with your Freighter wallet to verify ownership',
+            message: 'Sign this transaction with your Freighter wallet to verify ownership',
           })
         );
       } catch (error) {
@@ -93,7 +98,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
         } else if (error instanceof Error && error.message.includes('validation')) {
           reply.code(400).send(formatError(error.message, 'VALIDATION_ERROR'));
         } else if (error instanceof Error) {
-          reply.code(400).send(formatError(error.message, 'NONCE_GENERATION_FAILED'));
+          reply.code(400).send(formatError(error.message, 'CHALLENGE_GENERATION_FAILED'));
         } else {
           throw error;
         }
@@ -102,48 +107,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
   );
 
   /**
-   * GET /api/v1/wallet/challenge/:nonce
-   * Get challenge transaction to sign with Freighter wallet
-   * This transaction must be signed and sent back to /wallet/verify
-   *
-   * Public endpoint (no auth required)
-   * Params: nonce from /wallet/nonce
-   * Returns: { challenge: string (transaction XDR) }
-   */
-  app.get<{ Params: { nonce: string } }>(
-    '/api/v1/wallet/challenge/:nonce',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-        const { nonce } = request.params as { nonce: string };
-
-        logger.debug(`Retrieving challenge transaction for nonce: ${nonce.substring(0, 8)}...`);
-
-        const challengeTransaction = await getWalletChallenge(nonce);
-
-        reply.send(
-          formatSuccess({
-            challenge: challengeTransaction,
-            instructions:
-              'Sign this transaction with your Freighter wallet, then submit the signed transaction to /wallet/verify',
-          })
-        );
-      } catch (error) {
-        if (error instanceof Error) {
-          const statusCode = error.message.includes('expired') ? 410 : 400;
-          reply
-            .code(statusCode)
-            .send(
-              formatError(error.message, statusCode === 410 ? 'NONCE_EXPIRED' : 'CHALLENGE_ERROR')
-            );
-        } else {
-          throw error;
-        }
-      }
-    }
-  );
-
-  /**
-   * POST /api/v1/wallet/verify
+   * POST /api/v1/auth/wallet/verify
    * Verify signed challenge and link wallet to user account
    * Completes the wallet verification flow
    *
@@ -154,7 +118,7 @@ export const registerWalletRoutes = (app: FastifyInstance, prisma: PrismaClient)
   app.post<{
     Body: VerifyWalletRequest;
   }>(
-    '/api/v1/wallet/verify',
+    '/api/v1/auth/wallet/verify',
     { preHandler: authMiddleware },
     async (request: FastifyRequest<{ Body: VerifyWalletRequest }>, reply: FastifyReply) => {
       try {

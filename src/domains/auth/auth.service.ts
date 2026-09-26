@@ -7,7 +7,8 @@ import { hashPassword, comparePasswords } from '../../utils/password';
 import { blacklistRefreshToken } from '../../utils/token-blacklist';
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
+import { sendEmail } from '../../domains/notifications/email';
 
 const uuidv4 = (): string => randomUUID();
 
@@ -37,7 +38,119 @@ export class AuthService extends BaseService {
         },
       });
 
+      // Send verification email
+      await this.sendVerificationEmail(user.id, user.email, user.name);
+
       return { id: user.id, email: user.email };
+    });
+  }
+
+  /**
+   * Generate and send verification email
+   */
+  async sendVerificationEmail(userId: string, email: string, name: string | null): Promise<void> {
+    return this.executeWithLogging('user.sendVerificationEmail', async () => {
+      // Generate secure token
+      const token = randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+      // Store verification token
+      await this.prisma.verificationToken.create({
+        data: {
+          email,
+          token,
+          userId,
+          expiresAt,
+        },
+      });
+
+      // Send verification email
+      const verificationLink = `${config.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+
+      try {
+        await sendEmail({
+          to: email,
+          template: 'verification',
+          data: {
+            name: name || 'there',
+            link: verificationLink,
+          },
+        });
+
+        logger.info(`Verification email sent to ${email}`);
+      } catch (error) {
+        logger.error(`Failed to send verification email to ${email}:`, error);
+        // Don't fail registration if email fails, but log it
+      }
+    });
+  }
+
+  /**
+   * Verify email with token
+   */
+  async verifyEmail(token: string): Promise<{ success: boolean; message: string }> {
+    return this.executeWithLogging('user.verifyEmail', async () => {
+      const verificationToken = await this.prisma.verificationToken.findUnique({
+        where: { token },
+      });
+
+      if (!verificationToken) {
+        throw new ValidationError('Invalid verification token');
+      }
+
+      if (verificationToken.used) {
+        throw new ValidationError('Verification token already used');
+      }
+
+      if (verificationToken.expiresAt < new Date()) {
+        throw new ValidationError('Verification token has expired');
+      }
+
+      // Mark token as used
+      await this.prisma.verificationToken.update({
+        where: { id: verificationToken.id },
+        data: { used: true },
+      });
+
+      // Update user verification status
+      await this.prisma.user.update({
+        where: { id: verificationToken.userId },
+        data: { verified: true },
+      });
+
+      logger.info(`Email verified for user ${verificationToken.userId}`);
+
+      return {
+        success: true,
+        message: 'Email verified successfully',
+      };
+    });
+  }
+
+  /**
+   * Resend verification email
+   */
+  async resendVerificationEmail(email: string): Promise<{ success: boolean; message: string }> {
+    return this.executeWithLogging('user.resendVerificationEmail', async () => {
+      const user = await this.prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (!user) {
+        throw new ValidationError('User not found');
+      }
+
+      if (user.verified) {
+        throw new ValidationError('Email already verified');
+      }
+
+      // Send new verification email
+      await this.sendVerificationEmail(user.id, user.email, user.name);
+
+      return {
+        success: true,
+        message: 'Verification email sent',
+      };
     });
   }
 

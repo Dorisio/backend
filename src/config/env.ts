@@ -90,6 +90,8 @@ const EnvSchema = z.object({
   STRIPE_API_BASE: z.string().default('https://api.stripe.com'),
   PAYMENTS_WEBHOOK_TOLERANCE_SECONDS: z.string().transform(Number).default('300'),
   WALLET_NONCE_EXPIRY: z.string().transform(Number).default('600'),
+  MIN_PAYOUT_AMOUNT: z.string().transform(Number).default('50'),
+  FRONTEND_URL: z.string().default('http://localhost:3000'),
   SENDGRID_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().email().optional(),
   // Reverse proxy trust (see docs/RATE_LIMITING.md). Controls how request.ip

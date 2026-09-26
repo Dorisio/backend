@@ -44,6 +44,7 @@ model Creator {
   webhooks  Webhook[]
   freezes   AccountFreeze[]
   payments  Payment[]
+  payouts   Payout[]
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -120,6 +121,21 @@ model BlacklistedRefreshToken {
   createdAt DateTime @default(now())
 
   @@index([expiresAt])
+}
+
+model VerificationToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  userId    String?
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([token])
+  @@index([expiresAt])
+  @@index([userId])
 }
 
 model Webhook {
@@ -280,7 +296,7 @@ model AccountFreeze {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([creatorId, resolved, expiresAt])
   @@index([creatorId])
   @@index([resolved])
@@ -289,4 +305,38 @@ model AccountFreeze {
   @@index([creatorId, resolved, createdAt(sort: Desc)], map: "idx_accountFreeze_creator_resolved_createdAt")
   // Expiry sweep: only active freezes, oldest expiry first.
   @@index([resolved, expiresAt], map: "idx_accountFreeze_resolved_expiresAt")
+}
+
+enum PayoutStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+model Payout {
+  id         String       @id @default(cuid())
+  creatorId  String
+  creator    Creator      @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  amount          Float
+  status          PayoutStatus @default(pending)
+  transactionHash String?      @unique
+  walletAddress   String
+
+  errorMessage String?
+  retryCount    Int      @default(0)
+  nextRetryAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([creatorId, status])
+  @@index([status, nextRetryAt])
+  @@index([createdAt])
+  // Payout history per creator, newest first.
+  @@index([creatorId, createdAt(sort: Desc)], map: "idx_payout_creator_createdAt")
+  // Retry worker: failed payouts ordered by next retry time.
+  @@index([status, nextRetryAt], map: "idx_payout_status_nextRetryAt")
+  @@index([transactionHash])
 }
