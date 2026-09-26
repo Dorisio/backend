@@ -27,8 +27,18 @@ import redisPool from './lib/redisPool';
 import { emailNotificationWorker } from './lib/workers/email-notification.worker';
 import { setServiceState } from './services/health.service';
 import { initTokenBlacklist, closeTokenBlacklist } from './utils/token-blacklist';
+import { parseTrustProxy } from './config/rate-limit';
+import { collectConfigWarnings, logConfigWarnings } from './config/warnings';
+import { logger } from './utils/logger';
+import { registerRateLimiting } from './plugins/rateLimit';
+
+// Behind a reverse proxy, TRUST_PROXY makes request.ip the real client
+// address instead of the proxy's, so per-IP rate limits don't bucket every
+// user together. See docs/RATE_LIMITING.md.
+const trustProxy = parseTrustProxy(config.TRUST_PROXY);
 
 const app = Fastify({
+  trustProxy,
   genReqId: (request) => {
     const incoming = request.headers['x-request-id'];
     return typeof incoming === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming)
@@ -39,6 +49,14 @@ const app = Fastify({
     level: config.LOG_LEVEL,
   },
 });
+
+// Unsafe-but-valid settings (e.g. TRUST_PROXY=true) are reported together on
+// boot; see src/config/warnings.ts.
+logConfigWarnings(logger, collectConfigWarnings());
+
+// Rate limiting (#1) classifies routes in an onRoute hook, so it must be
+// registered before any route is added.
+await registerRateLimiting(app);
 
 // Initialize Prisma with query performance instrumentation (issue #12):
 // duration metrics, slow-query logging, short-lived read cache and unbounded
