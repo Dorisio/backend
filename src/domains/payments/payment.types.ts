@@ -26,6 +26,11 @@ export const CreateTipSchema = z.object({
     .positive('Amount must be greater than 0')
     .max(1000000, 'Amount exceeds maximum limit'),
   message: z.string().max(500, 'Message must be 500 characters or less').optional(),
+  /**
+   * Optional client-generated key. Reusing it returns the original tip
+   * instead of creating (and charging for) a duplicate.
+   */
+  idempotencyKey: z.string().trim().min(8).max(255).optional(),
 });
 
 /**

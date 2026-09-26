@@ -430,56 +430,6 @@ describe('PaymentService', () => {
     });
   });
 
-  describe('updateTipStatus', () => {
-    it('should update tip status and increment creator earnings', async () => {
-      const tipId = 'tip-123';
-      const creatorId = 'creator-123';
-
-      mockPrisma.tip.findUnique.mockResolvedValueOnce({
-        id: tipId,
-        creatorId,
-        amount: 100,
-        status: 'pending',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      mockPrisma.tip.updateMany.mockResolvedValue({ count: 1 });
-
-      mockPrisma.creator.update.mockResolvedValue({
-        id: creatorId,
-        totalEarnings: 100,
-        pendingBalance: 100,
-      });
-
-      const result = await paymentService.updateTipStatus(tipId, { status: 'completed' });
-
-      expect(result.status).toBe('completed');
-      expect(mockPrisma.creator.update).toHaveBeenCalled();
-      expect(mockPrisma.tip.updateMany).toHaveBeenCalledWith({
-        where: { id: tipId, status: 'pending' },
-        data: { status: 'completed' },
-      });
-    });
-
-    it('should throw NotFoundError if tip does not exist', async () => {
-      mockPrisma.tip.findUnique.mockResolvedValue(null);
-
-      await expect(
-        paymentService.updateTipStatus('non-existent', { status: 'completed' })
-      ).rejects.toThrow(NotFoundError);
-    });
-
-    it('does not credit earnings if another worker already changed the status', async () => {
-      mockPrisma.tip.findUnique.mockResolvedValueOnce({
-        id: 'tip-race', creatorId: 'creator-123', amount: 100, status: 'pending',
-      });
-      mockPrisma.tip.updateMany.mockResolvedValueOnce({ count: 0 });
-
-      await expect(
-        paymentService.updateTipStatus('tip-race', { status: 'completed' }),
-      ).rejects.toThrow('changed concurrently');
-      expect(mockPrisma.creator.update).not.toHaveBeenCalled();
-    });
-  });
+  // updateTipStatus optimistic-locking and concurrency coverage lives in
+  // ./__tests__/tip-concurrency.test.ts (issue #48).
 });
