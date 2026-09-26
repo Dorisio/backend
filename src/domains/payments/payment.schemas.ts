@@ -72,6 +72,7 @@ export const CreateTipSchema = z.object({
     .max(MAX_PAYMENT_AMOUNT, `Amount must not exceed ${MAX_PAYMENT_AMOUNT}`),
   message: sanitizedText(500, 'Message').optional(),
   currency: z.enum(['USD', 'XLM', 'USDC']).default('USD'),
+  idempotencyKey: z.string().trim().min(8, 'Idempotency key is too short').max(255).optional(),
 });
 
 /**

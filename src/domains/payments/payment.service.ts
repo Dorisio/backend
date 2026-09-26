@@ -8,14 +8,13 @@ import {
   BuildTransactionResponse,
   SubmitTransactionResponse,
 } from './payment.types';
-import { ValidationError, NotFoundError, UnauthorizedError } from '../../utils/errors';
+import { ValidationError, NotFoundError, UnauthorizedError, ConflictError } from '../../utils/errors';
 import {
   buildPaymentTransaction,
   submitSignedTransaction,
   checkTransactionStatus,
 } from '../../lib/stellar/transactions';
 import { logger } from '../../utils/logger';
-import { stellarConfirmationQueue } from '../../lib/queue';
 import {
   sanitizePageSize,
   sanitizePageNumber,
@@ -39,6 +38,26 @@ const TIP_RESPONSE_SELECT = {
   createdAt: true,
   updatedAt: true,
 } as const;
+
+/**
+ * Raised internally when the version-guarded update loses a race. The retry loop
+ * in `updateTipStatus` catches it; callers get a 409 with a retry hint instead.
+ */
+class OptimisticLockError extends Error {
+  constructor(tipId: string) {
+    super(`Tip ${tipId} was modified concurrently`);
+    this.name = 'OptimisticLockError';
+  }
+}
+
+/** Prisma reports unique-constraint violations (e.g. transactionHash) as P2002. */
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: string }).code === 'P2002'
+  );
+}
 
 export class PaymentService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -137,16 +156,50 @@ export class PaymentService extends BaseService {
         throw new ValidationError('Creator is not available for tips at this time');
       }
 
+      // Idempotency: a retried submission that reuses its key must return the
+      // tip created by the first attempt instead of creating a second charge.
+      if (data.idempotencyKey) {
+        const existing = await this.prisma.tip.findUnique({
+          where: { idempotencyKey: data.idempotencyKey },
+        });
+        if (existing) {
+          if (existing.fromUserId !== userId) {
+            throw new ConflictError('Idempotency key already used by another user');
+          }
+          logger.info(`Idempotent tip creation replayed for key ${data.idempotencyKey}`);
+          return this.formatTipResponse(existing);
+        }
+      }
+
       // Create tip in pending state
-      const tip = await this.prisma.tip.create({
-        data: {
-          fromUserId: userId,
-          creatorId: data.creatorId,
-          amount: data.amount,
-          message: data.message || null,
-          status: TipStatus.PENDING,
-        },
-      });
+      let tip;
+      try {
+        tip = await this.prisma.tip.create({
+          data: {
+            fromUserId: userId,
+            creatorId: data.creatorId,
+            amount: data.amount,
+            message: data.message || null,
+            status: TipStatus.PENDING,
+            idempotencyKey: data.idempotencyKey ?? null,
+          },
+        });
+      } catch (error) {
+        // Lost a concurrent create race on the same key: replay the winner.
+        if (data.idempotencyKey && isUniqueConstraintError(error)) {
+          const existing = await this.prisma.tip.findUnique({
+            where: { idempotencyKey: data.idempotencyKey },
+          });
+          if (existing) {
+            if (existing.fromUserId !== userId) {
+              throw new ConflictError('Idempotency key already used by another user');
+            }
+            logger.info(`Idempotent tip creation replayed for key ${data.idempotencyKey}`);
+            return this.formatTipResponse(existing);
+          }
+        }
+        throw error;
+      }
 
       logger.info(`Tip created: ${tip.id} from ${userId} to ${data.creatorId} for ${data.amount}`);
       return this.formatTipResponse(tip);
@@ -413,9 +466,12 @@ export class PaymentService extends BaseService {
   }
 
   /**
-   * List tips for a creator using cursor-based keyset pagination
+   * List tips for a creator using cursor-based keyset pagination.
+   *
+   * Distinct from the `listTipsCursor` above, which is the offset/keyset hybrid
+   * consumed by the HTTP routes; this is the GraphQL-style connection shape.
    */
-  async listTipsCursor(
+  async listTipsConnection(
     creatorId: string,
     params: { first?: number; after?: string; last?: number; before?: string } = {}
   ): Promise<{
@@ -489,9 +545,12 @@ export class PaymentService extends BaseService {
   }
 
   /**
-   * List user tip history using cursor-based keyset pagination
+   * List user tip history using cursor-based keyset pagination.
+   *
+   * Distinct from the `getUserTipHistoryCursor` above (offset/keyset hybrid used
+   * by the HTTP routes); this is the GraphQL-style connection shape.
    */
-  async getUserTipHistoryCursor(
+  async getUserTipHistoryConnection(
     userId: string,
     params: { first?: number; after?: string; last?: number; before?: string } = {}
   ): Promise<{
@@ -560,13 +619,32 @@ export class PaymentService extends BaseService {
       const maxRetries = 3;
       let attempt = 0;
       let shouldDispatchWebhook = false;
-      let finalTip: TipResponse;
+      let finalTip: TipResponse | undefined;
 
       while (true) {
         try {
           finalTip = await this.prisma.$transaction(async (tx) => {
             const tip = await tx.tip.findUnique({ where: { id: tipId } });
             if (!tip) throw new NotFoundError('Tip');
+
+            // Already in the requested state: a concurrent worker got here first
+            // (or the client retried). A duplicate *confirmation* is a conflict;
+            // any other same-state call is an idempotent no-op.
+            if (tip.status === data.status) {
+              if (data.status === TipStatus.COMPLETED) {
+                logger.warn(
+                  { tipId, status: tip.status },
+                  'Duplicate tip confirmation rejected (already completed)'
+                );
+                throw new ConflictError('Tip has already been confirmed', {
+                  tipId,
+                  status: tip.status,
+                  hint: 'This tip was already processed; do not retry the confirmation.',
+                });
+              }
+              shouldDispatchWebhook = false;
+              return this.formatTipResponse(tip);
+            }
 
             const validTransitions: Record<string, string[]> = {
               [TipStatus.PENDING]: [TipStatus.COMPLETED, TipStatus.FAILED, TipStatus.CANCELLED],
@@ -575,18 +653,31 @@ export class PaymentService extends BaseService {
               [TipStatus.CANCELLED]: [],
             };
             if (!validTransitions[tip.status]?.includes(data.status)) {
-              throw new ValidationError(`Cannot transition from ${tip.status} to ${data.status}`);
+              logger.warn(
+                { tipId, from: tip.status, to: data.status },
+                'Unexpected tip status transition rejected'
+              );
+              throw new ConflictError(
+                `Cannot transition tip from ${tip.status} to ${data.status}`,
+                { tipId, from: tip.status, to: data.status }
+              );
             }
 
+            // Optimistic lock: only the writer holding the version we just read
+            // may commit this transition. The loser gets count 0 and retries
+            // against fresh state, where it observes the winner's status.
+            const currentVersion = (tip as { version?: number }).version ?? 0;
             const changed = await tx.tip.updateMany({
-              where: { id: tipId, status: tip.status },
-              data: { status: data.status },
+              where: { id: tipId, status: tip.status, version: currentVersion },
+              data: { status: data.status, version: { increment: 1 } },
             });
             if (changed.count !== 1) {
-              throw new ValidationError('Tip status changed concurrently; reload and retry');
+              throw new OptimisticLockError(tipId);
             }
 
-            if (data.status === TipStatus.COMPLETED && tip.status !== TipStatus.COMPLETED) {
+            // Earnings are credited strictly inside the winning transition, so a
+            // single tip can increment creator earnings exactly once.
+            if (data.status === TipStatus.COMPLETED) {
               await tx.creator.update({
                 where: { id: tip.creatorId },
                 data: {
@@ -603,22 +694,33 @@ export class PaymentService extends BaseService {
             return this.formatTipResponse({ ...tip, status: data.status });
           });
           break; // Exit retry loop on success
-        } catch (error: any) {
+        } catch (error: unknown) {
           attempt++;
-          if (
-            error.code === 'P2028' || 
-            error.code === 'P2034' || 
-            (error instanceof ValidationError && error.message.includes('concurrently'))
-          ) {
-            if (attempt >= maxRetries) {
-              throw new Error(`Failed to update tip status after ${maxRetries} attempts due to conflicts`);
-            }
-            logger.warn(`Transaction conflict updating tip ${tipId}, retrying (attempt ${attempt}/${maxRetries})`);
-            await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(2, attempt)));
+          const code = (error as { code?: string })?.code;
+          const retryable =
+            error instanceof OptimisticLockError || code === 'P2028' || code === 'P2034';
+
+          if (retryable && attempt < maxRetries) {
+            logger.warn(
+              { tipId, attempt, maxRetries },
+              'Concurrent tip update detected; retrying with fresh state'
+            );
+            await new Promise((resolve) => setTimeout(resolve, 50 * Math.pow(2, attempt)));
             continue;
+          }
+
+          if (error instanceof OptimisticLockError) {
+            throw new ConflictError('Tip was updated concurrently; reload and retry', {
+              tipId,
+              hint: 'Fetch the tip again and retry the transition with the current state.',
+            });
           }
           throw error;
         }
+      }
+
+      if (!finalTip) {
+        throw new ConflictError('Tip update did not complete', { tipId });
       }
 
       // Dispatch webhooks outside transaction
@@ -735,22 +837,46 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.submitTransaction', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
-        select: { id: true, status: true },
+        select: { id: true, status: true, transactionHash: true },
       });
 
       if (!tip) {
         throw new NotFoundError('Tip');
       }
 
+      // Idempotency: a tip that already carries a transaction hash was submitted
+      // before — return the stored result instead of submitting a second time.
+      if (tip.transactionHash) {
+        logger.warn(
+          { tipId, transactionHash: tip.transactionHash },
+          'Duplicate payment submission detected; returning existing transaction'
+        );
+        return {
+          tipId,
+          transactionHash: tip.transactionHash,
+          status: tip.status as TipResponse['status'],
+        };
+      }
+
       if (tip.status !== TipStatus.PENDING) {
-        throw new ValidationError('Can only submit transaction for pending tips');
+        throw new ConflictError('Can only submit transaction for pending tips', {
+          tipId,
+          status: tip.status,
+        });
+      }
+
+      // Submit transaction to Stellar network. This is the only non-transactional
+      // step; the unique transactionHash constraint below makes persistence
+      // idempotent if two submissions race.
+      let result: Awaited<ReturnType<typeof submitSignedTransaction>>;
+      try {
+        result = await submitSignedTransaction(transactionEnvelope);
+      } catch (error) {
+        logger.error(`Failed to submit transaction for tip ${tipId}:`, error);
+        throw new ValidationError('Failed to submit payment transaction');
       }
 
       try {
-        // Submit transaction to Stellar network
-        const result = await submitSignedTransaction(transactionEnvelope);
-
-        // Store transaction hash in tip
         const updatedTip = await this.prisma.tip.update({
           where: { id: tipId },
           data: {
@@ -769,7 +895,27 @@ export class PaymentService extends BaseService {
           status: updatedTip.status as TipResponse['status'],
         };
       } catch (error) {
-        logger.error(`Failed to submit transaction for tip ${tipId}:`, error);
+        // Unique constraint on transactionHash: a concurrent submission already
+        // persisted this hash. Never overwrite it — replay the stored value.
+        if (isUniqueConstraintError(error)) {
+          const winner = await this.prisma.tip.findUnique({
+            where: { id: tipId },
+            select: { status: true, transactionHash: true },
+          });
+          if (winner?.transactionHash) {
+            logger.warn(
+              { tipId, transactionHash: winner.transactionHash },
+              'Concurrent payment submission lost the race; returning stored transaction'
+            );
+            return {
+              tipId,
+              transactionHash: winner.transactionHash,
+              status: winner.status as TipResponse['status'],
+            };
+          }
+          throw new ConflictError('Transaction has already been submitted for this tip', { tipId });
+        }
+        logger.error(`Failed to store transaction for tip ${tipId}:`, error);
         throw new ValidationError('Failed to submit payment transaction');
       }
     });
@@ -794,7 +940,10 @@ export class PaymentService extends BaseService {
         throw new ValidationError('No transaction hash found for this tip');
       }
 
-      // Queue the Stellar confirmation check as async job instead of blocking
+      // Queue the Stellar confirmation check as async job instead of blocking.
+      // Imported lazily so loading the payment service never opens a Redis
+      // connection as a side effect (keeps unit tests network-free).
+      const { stellarConfirmationQueue } = await import('../../lib/queue');
       await stellarConfirmationQueue.add(
         'confirm-transaction',
         {

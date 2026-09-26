@@ -79,6 +79,45 @@ export async function pollForTransactionConfirmation(
 }
 
 /**
+ * Atomically complete a tip and credit creator earnings exactly once.
+ *
+ * The transition is guarded by `updateMany({ where: { status: 'pending' } })`, so
+ * when two confirmation paths (worker, Horizon stream, reconciliation job) race,
+ * only the caller whose update reports `count === 1` credits earnings. Wrapping
+ * both writes in one transaction means a crash can never leave earnings credited
+ * without the matching status change.
+ */
+async function completeTipAtomically(
+  prisma: PrismaClient,
+  tip: { id: string; creatorId: string; amount: number }
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const changed = await tx.tip.updateMany({
+      where: { id: tip.id, status: 'pending' },
+      data: { status: 'completed', version: { increment: 1 } },
+    });
+
+    if (changed.count !== 1) {
+      logger.warn(
+        { tipId: tip.id },
+        'Concurrent tip confirmation detected; earnings credited once'
+      );
+      return false;
+    }
+
+    await tx.creator.update({
+      where: { id: tip.creatorId },
+      data: {
+        totalEarnings: { increment: tip.amount },
+        pendingBalance: { increment: tip.amount },
+      },
+    });
+
+    return true;
+  });
+}
+
+/**
  * Update tip status based on transaction confirmation
  * Used to transition tip from pending to completed/failed based on network confirmation
  *
@@ -117,30 +156,14 @@ export async function updateTipStatusFromTransaction(
         return;
       }
 
-      // Update tip to completed
-      await prisma.tip.update({
-        where: { id: tipId },
-        data: {
-          status: 'completed',
-        },
-      });
-
-      // Update creator earnings
-      await prisma.creator.update({
-        where: { id: tip.creatorId },
-        data: {
-          totalEarnings: {
-            increment: tip.amount,
-          },
-          pendingBalance: {
-            increment: tip.amount,
-          },
-        },
-      });
-
-      logger.info(
-        `Tip confirmed and completed: ${tipId}, creator earnings updated by ${tip.amount}`
-      );
+      // Atomic transition + earnings credit; a parallel confirmer that wins the
+      // race makes this a no-op so earnings cannot be doubled.
+      const credited = await completeTipAtomically(prisma, tip);
+      if (credited) {
+        logger.info(
+          `Tip confirmed and completed: ${tipId}, creator earnings updated by ${tip.amount}`
+        );
+      }
     } else {
       // Transaction failed or timed out
       const tip = await prisma.tip.findUnique({
@@ -243,30 +266,13 @@ export async function streamCreatorPayments(
             if (tip) {
               logger.info(`Confirming tip from payment stream: ${tip.id}`);
 
-              // Update tip to completed
-              await prisma.tip.update({
-                where: { id: tip.id },
-                data: {
-                  status: 'completed',
-                },
-              });
-
-              // Update creator earnings
-              await prisma.creator.update({
-                where: { id: tip.creatorId },
-                data: {
-                  totalEarnings: {
-                    increment: tip.amount,
-                  },
-                  pendingBalance: {
-                    increment: tip.amount,
-                  },
-                },
-              });
-
-              logger.info(
-                `Tip auto-confirmed from payment stream: ${tip.id}, amount: ${tip.amount}`
-              );
+              // Atomic transition + earnings credit (see completeTipAtomically).
+              const credited = await completeTipAtomically(prisma, tip);
+              if (credited) {
+                logger.info(
+                  `Tip auto-confirmed from payment stream: ${tip.id}, amount: ${tip.amount}`
+                );
+              }
             } else {
               logger.debug(
                 `No matching pending tip found for payment: ${payment.transaction_hash}`
@@ -329,29 +335,12 @@ export async function processPendingTips(prisma: PrismaClient): Promise<number> 
           );
 
           if (confirmationResult.confirmed && confirmationResult.result) {
-            // Update tip to completed
-            await prisma.tip.update({
-              where: { id: tip.id },
-              data: {
-                status: 'completed',
-              },
-            });
-
-            // Update creator earnings
-            await prisma.creator.update({
-              where: { id: tip.creatorId },
-              data: {
-                totalEarnings: {
-                  increment: tip.amount,
-                },
-                pendingBalance: {
-                  increment: tip.amount,
-                },
-              },
-            });
-
-            confirmed++;
-            logger.info(`Confirmed pending tip: ${tip.id}`);
+            // Atomic transition + earnings credit (see completeTipAtomically).
+            const credited = await completeTipAtomically(prisma, tip);
+            if (credited) {
+              confirmed++;
+              logger.info(`Confirmed pending tip: ${tip.id}`);
+            }
           } else {
             // Check if too much time has passed (give up after 5 minutes)
             const ageMs = Date.now() - tip.createdAt.getTime();

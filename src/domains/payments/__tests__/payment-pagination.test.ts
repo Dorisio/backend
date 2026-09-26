@@ -33,7 +33,7 @@ describe('PaymentService Cursor Pagination', () => {
   });
 
   it('should paginate creator tips with cursor', async () => {
-    const result = await paymentService.listTipsCursor('creator_1', { first: 5 });
+    const result = await paymentService.listTipsConnection('creator_1', { first: 5 });
 
     expect(result.edges).toHaveLength(5);
     expect(result.edges[0].node.id).toBe('tip_1');
@@ -44,7 +44,7 @@ describe('PaymentService Cursor Pagination', () => {
   });
 
   it('should paginate user tip history with cursor', async () => {
-    const result = await paymentService.getUserTipHistoryCursor('user_1', { first: 5 });
+    const result = await paymentService.getUserTipHistoryConnection('user_1', { first: 5 });
 
     expect(result.edges).toHaveLength(5);
     expect(result.edges[0].node.id).toBe('tip_1');

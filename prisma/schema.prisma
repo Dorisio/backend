@@ -85,6 +85,12 @@ model Tip {
 
   status          String  @default("pending")
   transactionHash String? @unique
+  // Optimistic locking guard: every status write must match the version it
+  // read and increments it, so concurrent confirmations cannot both succeed.
+  version         Int     @default(0)
+  // Client-supplied idempotency key for tip/payment submission; a retry
+  // returns the original tip instead of creating a duplicate charge.
+  idempotencyKey  String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
