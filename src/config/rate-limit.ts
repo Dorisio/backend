@@ -76,6 +76,7 @@ export const RATE_LIMIT_RULES: RateLimitRule[] = [
   { method: 'POST', url: '/api/v1/payments', class: 'sensitive' },
   { method: 'POST', url: '/api/v1/payments/:id/refund', class: 'sensitive' },
   { method: 'POST', url: '/api/v1/creators/payout', class: 'sensitive' },
+  { method: 'POST', url: '/api/v1/referrals/payout', class: 'sensitive' },
 
   // Resource intensive: Stellar Horizon round-trips, job enqueueing, cache
   // warming and EXPLAIN queries.
