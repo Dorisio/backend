@@ -21,6 +21,7 @@ import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerNotificationRoutes } from './domains/notifications/notification.routes';
+import { registerReferralRoutes } from './domains/referrals/referral.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import { closeQueues } from './lib/queue';
 import redisPool from './lib/redisPool';
@@ -240,6 +241,7 @@ const bootstrap = async (): Promise<void> => {
   registerWebhookRoutes(app, prisma);
   registerAnalyticsRoutes(app, prisma);
   registerAdminRoutes(app, prisma);
+  registerReferralRoutes(app, prisma);
   registerMetricsRoute(app, prisma);
   registerQueryPerformanceRoutes(app);
   registerJobRoutes(app);

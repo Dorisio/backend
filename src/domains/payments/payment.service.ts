@@ -723,6 +723,29 @@ export class PaymentService extends BaseService {
         throw new ConflictError('Tip update did not complete', { tipId });
       }
 
+      // Process referral commission outside transaction (idempotent)
+      if (shouldDispatchWebhook && finalTip) {
+        try {
+          // Look up the sender's userId from the tip (fromUserId is the referee)
+          const tipRecord = await this.prisma.tip.findUnique({
+            where: { id: finalTip.id },
+            select: { fromUserId: true, amount: true },
+          });
+          if (tipRecord) {
+            const { ReferralService } = await import('../referrals/referral.service');
+            const referralService = new ReferralService(this.prisma);
+            await referralService.processCommissionForTip({
+              tipId: finalTip.id,
+              tipAmount: tipRecord.amount,
+              refereeUserId: tipRecord.fromUserId,
+            });
+          }
+        } catch (e) {
+          // Commission failures must never block a confirmed tip
+          logger.error(`Failed to process referral commission for tip ${finalTip.id}:`, e);
+        }
+      }
+
       // Dispatch webhooks outside transaction
       if (shouldDispatchWebhook) {
         try {
