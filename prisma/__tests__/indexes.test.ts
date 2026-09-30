@@ -16,7 +16,8 @@ describe('Prisma indexing strategy (Issue #29)', () => {
   it('adds unique transactionHash and composite webhook delivery index', () => {
     expect(schema).toMatch(/transactionHash String\? @unique/);
     expect(schema).toMatch(/@@index\(\[webhookId, status\]/);
-    expect(schema).toMatch(/@@index\(\[role\]/);
+    // Composite role index (idx_user_role_createdAt) covers role-only filters.
+    expect(schema).toMatch(/@@index\(\[role,/);
     expect(schema).toMatch(/@@index\(\[createdAt\]/);
   });
 });

@@ -2,11 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
 import type { PrismaClient } from '@prisma/client';
 import { registerAdminRoutes } from '../../domains/admin/admin.routes';
+import { applyJsonSerializer } from '../../config/serialization';
 
 // ── auth middleware mock ──────────────────────────────────────────────────────
 // Intercept authMiddleware so tests control request.user without real JWTs.
 // requireAdmin calls requireRole which calls authMiddleware internally.
-const authMiddlewareMock = vi.fn();
+const authMiddlewareMock = vi.hoisted(() => vi.fn());
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: authMiddlewareMock,
 }));
@@ -47,6 +48,10 @@ vi.mock('../../lib/requestContext', () => ({
 
 function buildApp(): FastifyInstance {
   const app = Fastify({ logger: false });
+  // Production registers this serializer: the routes' response schemas are
+  // documentation-only shorthand entries (`200: { description }`) that
+  // fast-json-stringify would reject while building the serialization schema.
+  applyJsonSerializer(app);
   registerAdminRoutes(app, {} as unknown as PrismaClient);
   return app;
 }

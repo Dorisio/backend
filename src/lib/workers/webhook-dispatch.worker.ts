@@ -5,7 +5,9 @@ import crypto from 'crypto';
 import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '../queue';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
-import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
+// Import from the breaker implementation directory so `executeWithBreaker`
+// and its thrown `CircuitBreakerOpenError` come from the same module.
+import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker/index';
 
 const prisma = new PrismaClient();
 

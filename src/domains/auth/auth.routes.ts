@@ -49,30 +49,6 @@ function parseExpiryToMs(expiryStr: string): number {
   }
 }
 
-/**
- * Parse expiry string like "7d", "24h", "3600" to milliseconds
- */
-function parseExpiryToMs(expiryStr: string): number {
-  const match = expiryStr.match(/^(\d+)([dhms]?)$/);
-  if (!match) return 7 * 24 * 60 * 60 * 1000; // Default 7 days
-
-  const value = parseInt(match[1], 10);
-  const unit = match[2] || 's';
-
-  switch (unit) {
-    case 'd':
-      return value * 24 * 60 * 60 * 1000;
-    case 'h':
-      return value * 60 * 60 * 1000;
-    case 'm':
-      return value * 60 * 1000;
-    case 's':
-      return value * 1000;
-    default:
-      return value * 1000;
-  }
-}
-
 export const registerAuthRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const authService = new AuthService(prisma);
 

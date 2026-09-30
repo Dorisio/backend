@@ -111,6 +111,22 @@ const EnvSchema = z.object({
   RATE_LIMIT_AUTHENTICATED_WINDOW_MS: z.string().transform(Number).default('60000'),
   RATE_LIMIT_SENSITIVE_MAX: z.string().transform(Number).default('10'),
   RATE_LIMIT_SENSITIVE_WINDOW_MS: z.string().transform(Number).default('60000'),
+  // CORS (see docs/CORS.md). Comma-separated allow-list.
+  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:5173'),
+  CORS_CREDENTIALS: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
+  CORS_MAX_AGE: z.string().transform(Number).default('86400'),
+  // GraphQL API (see docs/GRAPHQL.md)
+  GRAPHQL_ENABLED: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
+  GRAPHQL_MAX_DEPTH: z.string().transform(Number).default('10'),
+  GRAPHQL_MAX_COMPLEXITY: z.string().transform(Number).default('1000'),
+  // Legacy BullMQ worker processes (src/lib/workers)
+  WORKER_CONCURRENCY: z.string().transform(Number).default('5'),
 });
 
 type Environment = z.infer<typeof EnvSchema>;
@@ -127,3 +143,21 @@ const validateEnv = (): Environment => {
 };
 
 export const config = validateEnv();
+
+/**
+ * Resolves the CORS origin allow-list (docs/CORS.md).
+ *
+ * Reads the live environment first so tests/operators can override
+ * `CORS_ORIGINS` after this module has been evaluated, then falls back to
+ * the parsed config. Returns `true` (reflect the request origin) when no
+ * allow-list is configured or when the list is the bare `*` wildcard —
+ * a literal `*` is invalid together with `credentials: true`.
+ */
+export function getCorsOrigins(): string[] | true {
+  const raw = (process.env.CORS_ORIGINS ?? config.CORS_ORIGINS ?? '').trim();
+  if (raw === '' || raw === '*') return true;
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}

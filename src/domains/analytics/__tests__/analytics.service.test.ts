@@ -40,6 +40,8 @@ describe('AnalyticsService (Optimized with Query Caching)', () => {
           _max: { amount: 100 },
           _min: { amount: 25 },
         }),
+        // Growth-rate comparison inside the tip-frequency stats.
+        count: vi.fn().mockResolvedValue(2),
       },
     };
 

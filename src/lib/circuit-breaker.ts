@@ -186,6 +186,20 @@ export function getCircuitBreaker(name: string, config: CircuitBreakerConfig = {
   return breaker;
 }
 
+/**
+ * Re-export the registry-based breaker API (issue #22) from `./circuit-breaker/`.
+ *
+ * Both the legacy breaker above and the newer rolling-window implementation
+ * live under `src/lib/`; imports of the form `from '../circuit-breaker'`
+ * resolve to this file (module file beats directory index), so the newer
+ * API is re-exported here to keep every import path working.
+ */
+export {
+  executeWithBreaker,
+  getCircuitBreakerSnapshots,
+  syncCircuitBreakerMetrics,
+} from './circuit-breaker/index';
+
 export function resetCircuitBreakers(): void {
   breakers.clear();
 }

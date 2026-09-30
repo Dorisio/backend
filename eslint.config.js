@@ -17,6 +17,10 @@ export default [
       },
       globals: {
         ...globals.node,
+        // TypeScript's `NodeJS` namespace (e.g. NodeJS.Timeout) is not part
+        // of the runtime globals package, but is a legitimate identifier in
+        // these files — teach no-undef about it.
+        NodeJS: true,
       },
     },
     plugins: {

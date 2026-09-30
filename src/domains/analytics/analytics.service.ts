@@ -59,11 +59,12 @@ export class AnalyticsService extends BaseService {
           case 'daily':
             dateKey = date.toISOString().split('T')[0];
             break;
-          case 'weekly':
+          case 'weekly': {
             const weekStart = new Date(date);
             weekStart.setDate(date.getDate() - date.getDay());
             dateKey = weekStart.toISOString().split('T')[0];
             break;
+          }
           case 'monthly':
             dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
             break;

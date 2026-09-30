@@ -118,7 +118,7 @@ export class PaymentService extends BaseService {
           userId,
           verified: true,
         },
-        select: { id: true },
+        select: { id: true, publicKey: true },
       });
 
       if (!wallet) {

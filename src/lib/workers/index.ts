@@ -1,6 +1,5 @@
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
-import { registerScheduledJobs } from '../jobs/scheduler';
 import { createAnalyticsWorker } from './analytics.worker';
 import { createEmailWorker } from './email.worker';
 import { createExportsWorker } from './exports.worker';
@@ -18,7 +17,6 @@ export async function startWorkers() {
     createExportsWorker(),
   ];
 
-  await registerScheduledJobs();
   logger.info(
     { concurrency: config.WORKER_CONCURRENCY, count: workers.length },
     'Background workers started',

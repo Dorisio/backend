@@ -3,6 +3,28 @@ import { withRedis } from '../redisPool';
 import { cacheHits, cacheMisses, cacheSizeGauge, cacheHitRateGauge } from '../metrics';
 import { config } from '../../config';
 
+/**
+ * Cache namespaces. The value doubles as the key segment, so keys read like
+ * `v1:user:123`. Used by cache-aside helpers and cache warming to pick a
+ * TTL from {@link TTL_CONFIG}.
+ */
+export enum CacheType {
+  USER = 'user',
+  CREATOR = 'creator',
+  TRENDING = 'trending',
+  ANALYTICS = 'analytics',
+  SEARCH = 'search',
+}
+
+/** Default TTLs (ms) per cache namespace. */
+export const TTL_CONFIG: Record<CacheType, number> = {
+  [CacheType.USER]: 5 * 60_000, // 5 min
+  [CacheType.CREATOR]: 10 * 60_000, // 10 min
+  [CacheType.TRENDING]: 60_000, // 1 min
+  [CacheType.ANALYTICS]: 60 * 60_000, // 1 h
+  [CacheType.SEARCH]: 60_000, // 1 min
+};
+
 type CacheOptions = { ttlMs?: number; prefix?: string };
 
 const memoryCache = new LRUCache<string, any>({

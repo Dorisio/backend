@@ -20,6 +20,15 @@ export async function enqueueEmail(notification: EmailNotification): Promise<str
   return String(job.id);
 }
 
+/**
+ * Sends an email by enqueuing it on the email notification queue, where the
+ * email worker renders the template and delivers it. Alias of
+ * {@link enqueueEmail} for callers that think in "send" terms (auth flows).
+ */
+export async function sendEmail(notification: EmailNotification): Promise<void> {
+  await enqueueEmail(notification);
+}
+
 export async function enqueueEmailBatch(notifications: EmailNotification[]): Promise<string[]> {
   const jobs = await emailNotificationQueue.addBulk(notifications.map((notification) => ({
     name: 'send',

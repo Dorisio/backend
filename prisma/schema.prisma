@@ -22,6 +22,9 @@ model User {
   wallets   Wallet[]
   tips      Tip[]
   payments  Payment[]
+
+  // Admin user listing: role filter + newest-first ordering (#12).
+  @@index([role, createdAt(sort: Desc)], map: "idx_user_role_createdAt")
 }
 
 model Creator {
@@ -33,6 +36,12 @@ model Creator {
   displayName String?
   bio         String?
   avatar      String?
+
+  // Discovery / full-text search facets. `tags`/`category` are filterable
+  // facets; `followerCount` drives the popularity side of search ranking.
+  tags          String[] @default([])
+  category      String?
+  followerCount Int      @default(0)
 
   verified Boolean @default(false)
   isPublic Boolean @default(true)
@@ -56,6 +65,25 @@ model Creator {
   @@index([isPublic, verified, totalEarnings(sort: Desc)], map: "idx_creator_public_verified_earnings")
   // Global top-earners ranking (no filters).
   @@index([totalEarnings(sort: Desc)], map: "idx_creator_totalEarnings")
+  // Search facet grouping (category counts).
+  @@index([category], map: "idx_creator_category")
+  // Browse/search ranking: visibility filter, then verified, then popularity.
+  @@index([isPublic, verified, followerCount(sort: Desc)], map: "idx_creator_public_verified_followers")
+}
+
+// Full-text search analytics: normalized query term + hit count, used both
+// for trend reporting and autocomplete suggestions.
+model SearchQuery {
+  id            String   @id @default(cuid())
+  term          String   @unique
+  count         Int      @default(1)
+  lastSearchedAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  // "Top searches" listing: count descending.
+  @@index([count(sort: Desc)], map: "idx_searchQuery_count")
+  // Autocomplete: prefix lookups on the normalized term.
+  @@index([term], map: "idx_searchQuery_term")
 }
 
 model Wallet {

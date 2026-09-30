@@ -34,6 +34,9 @@ export interface ValidationIssue {
 
 export interface RequestValidationErrorDetails {
   issues: ValidationIssue[];
+  // AppError.details is an index-signature type, so mirror it here to stay
+  // assignable (extra context may be attached by subclasses/middleware).
+  [key: string]: unknown;
 }
 
 /**

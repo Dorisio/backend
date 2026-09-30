@@ -1,7 +1,10 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getStellarClient } from './client';
 import { logger } from '../../utils/logger';
-import { CircuitBreakerOpenError } from '../circuit-breaker';
+// Import from the breaker implementation directory (not `../circuit-breaker`,
+// which resolves to the legacy breaker file) so `instanceof` matches the
+// error executeWithBreaker actually throws.
+import { CircuitBreakerOpenError } from '../circuit-breaker/index';
 
 export interface PaymentTransactionData {
   senderPublicKey: string;

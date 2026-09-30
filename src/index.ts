@@ -1,13 +1,13 @@
-import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
+import Fastify from 'fastify';
 import { randomUUID } from 'node:crypto';
-import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { config } from './config/env';
+import { swaggerConfig } from './config/swagger';
 import { applyJsonSerializer } from './config/serialization';
-import { AppError } from './utils/errors';
+import { requestDurationHistogram } from './lib/metrics';
 import { setServiceState } from './services/health.service';
-import { PrismaClient } from '@prisma/client';
 import { initializeDatabase, closeDatabase, checkDatabaseHealth, getPoolMetrics, getCircuitBreaker } from './db';
 import { createInstrumentedPrismaClient, getPrismaPerformanceMonitor } from './db/prisma-performance';
 import { getCircuitBreakerSnapshots as getExternalBreakerSnapshots } from './lib/circuit-breaker';
@@ -21,16 +21,23 @@ import { registerWebhookRoutes } from './domains/webhooks/webhook.routes';
 import { registerAnalyticsRoutes } from './domains/analytics/analytics.routes';
 import { registerAdminRoutes } from './domains/admin/admin.routes';
 import { registerNotificationRoutes } from './domains/notifications/notification.routes';
+import { registerSearchRoutes } from './domains/search/search.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
+import { registerQueryPerformanceRoutes } from './routes/query-performance.routes';
+import { registerJobRoutes } from './domains/jobs/jobs.routes';
 import { closeQueues } from './lib/queue';
-import redisPool from './lib/redisPool';
+import redisPool, { startRedisHealthCheck } from './lib/redisPool';
 import { emailNotificationWorker } from './lib/workers/email-notification.worker';
-import { setServiceState } from './services/health.service';
 import { initTokenBlacklist, closeTokenBlacklist } from './utils/token-blacklist';
 import { parseTrustProxy } from './config/rate-limit';
 import { collectConfigWarnings, logConfigWarnings } from './config/warnings';
 import { logger } from './utils/logger';
 import { registerRateLimiting } from './plugins/rateLimit';
+import { registerRequestLogging } from './plugins/requestLogging';
+import { registerSecurityPlugins } from './plugins/security';
+import { registerApiVersioning } from './plugins/apiVersion';
+import { globalErrorHandler, notFoundHandler } from './middleware/error-handler';
+import { registerGraphQL } from './graphql/plugin';
 
 // Behind a reverse proxy, TRUST_PROXY makes request.ip the real client
 // address instead of the proxy's, so per-IP rate limits don't bucket every
@@ -54,6 +61,11 @@ const app = Fastify({
 // boot; see src/config/warnings.ts.
 logConfigWarnings(logger, collectConfigWarnings());
 
+// Per-request AsyncLocalStorage context: echoes X-Request-Id and lets the
+// Pino mixin attach requestId/userId to every log line (#26). Registered
+// before everything else so later hooks log with the resolved id.
+registerRequestLogging(app);
+
 // Rate limiting (#1) classifies routes in an onRoute hook, so it must be
 // registered before any route is added.
 await registerRateLimiting(app);
@@ -66,27 +78,61 @@ const { client: prisma } = createInstrumentedPrismaClient();
 // Response schemas are documentation-only; see config/serialization.ts.
 applyJsonSerializer(app);
 
-// Register plugins
-app.register(cors, {
-  origin: true,
-  credentials: true,
-});
-app.register(cookie);
+// Security headers + CORS allow-list (docs/CORS.md) and the CORS preflight
+// rate limiter. fastify-plugin'd, so hooks land on the root instance.
+await registerSecurityPlugins(app);
 
-app.register(cookie, {
-  secret: config.JWT_SECRET,
+// Signed cookies for JWT auth (registered exactly once — duplicate
+// registration would trip Fastify's duplicate-decorator check).
+await app.register(cookie, { secret: config.JWT_SECRET });
+
+// OpenAPI document at /api-spec.json, interactive docs under /docs.
+await app.register(swagger, { openapi: swaggerConfig.openapi });
+await app.register(swaggerUi, { routePrefix: '/docs', uiConfig: { docExpansion: 'list' } });
+app.get('/api-spec.json', async () => app.swagger());
+
+// API versioning (#25): validates an optional API-Version header against
+// SUPPORTED_API_VERSIONS and records per-version usage metrics. Existing
+// /api/v1/... paths are untouched.
+registerApiVersioning(app);
+
+// Request duration histogram for Prometheus (#12).
+const requestStartTimes = new WeakMap<object, number>();
+app.addHook('onRequest', (request, _reply, done) => {
+  requestStartTimes.set(request, Date.now());
+  done();
+});
+app.addHook('onResponse', (request, reply, done) => {
+  const startedAt = requestStartTimes.get(request);
+  if (startedAt !== undefined) {
+    requestDurationHistogram.observe(
+      {
+        method: request.method,
+        route: request.routeOptions.url ?? 'unmatched',
+        status: String(reply.statusCode),
+      },
+      (Date.now() - startedAt) / 1000,
+    );
+    requestStartTimes.delete(request);
+  }
+  done();
 });
 
 // Register routes
 registerAuthRoutes(app, prisma);
 registerWalletRoutes(app, prisma);
 registerPaymentRoutes(app, prisma);
+registerChargeRoutes(app, prisma);
 registerUserRoutes(app, prisma);
 registerCreatorPayoutRoutes(app, prisma);
 registerWebhookRoutes(app, prisma);
 registerAnalyticsRoutes(app, prisma);
 registerAdminRoutes(app, prisma);
+registerNotificationRoutes(app, prisma);
+registerSearchRoutes(app, prisma);
 registerMetricsRoute(app, prisma);
+registerQueryPerformanceRoutes(app);
+registerJobRoutes(app);
 
 // Health check endpoint
 app.get('/health', async (_request, _reply) => {
@@ -168,11 +214,6 @@ app.addHook('onReady', async () => {
 // queues (Redis + BullMQ), (3) close the database connection pool. A hard
 // timeout forces exit if any step hangs, so a stuck close() can't leave
 // the process running forever under an orchestrator expecting it to stop.
-//
-// This replaces two separate, competing SIGTERM/SIGINT handlers that used
-// to be registered here — both fired on the same signal, both raced to
-// call `process.exit()`, and neither called `closeQueues()`, so pending
-// BullMQ jobs and their Redis connections were never drained.
 let shuttingDown = false;
 
 const shutdown = async (signal: 'SIGTERM' | 'SIGINT'): Promise<void> => {
@@ -221,29 +262,10 @@ process.on('SIGINT', () => {
 });
 
 const bootstrap = async (): Promise<void> => {
-  await registerSecurityPlugins(app);
-  await app.register(cookie);
-  
+  // In-memory refresh-token blacklist with periodic cleanup (#42).
   await initTokenBlacklist(prisma);
 
-  // API versioning (#25): validates an optional API-Version header against
-  // SUPPORTED_API_VERSIONS and records per-version usage metrics. Existing
-  // /api/v1/... paths are untouched — this only adds header validation and
-  // observability.
-  registerApiVersioning(app);
-
-  registerAuthRoutes(app, prisma);
-  registerWalletRoutes(app, prisma);
-  registerPaymentRoutes(app, prisma);
-  registerUserRoutes(app, prisma);
-  registerCreatorPayoutRoutes(app, prisma);
-  registerWebhookRoutes(app, prisma);
-  registerAnalyticsRoutes(app, prisma);
-  registerAdminRoutes(app, prisma);
-  registerMetricsRoute(app, prisma);
-  registerQueryPerformanceRoutes(app);
-  registerJobRoutes(app);
-
+  // GraphQL endpoint at /graphql (docs/GRAPHQL.md); no-ops when disabled.
   await registerGraphQL(app, prisma);
 };
 
@@ -261,12 +283,6 @@ const start = async (): Promise<void> => {
 
     startRedisHealthCheck();
 
-    if (config.ENABLE_WORKERS) {
-      startWorkers().catch((err) => {
-        app.log.error({ err }, 'Failed to start background workers');
-      });
-    }
-
     await app.listen({ port: config.PORT, host: '0.0.0.0' });
     app.log.info(`Server listening on http://0.0.0.0:${config.PORT}`);
   } catch (err) {
@@ -274,25 +290,6 @@ const start = async (): Promise<void> => {
     process.exit(1);
   }
 };
-
-const handleShutdown = async (signal: string): Promise<void> => {
-  app.log.info(`Received ${signal}, starting graceful shutdown...`);
-  try {
-    await app.close();
-    await closeDatabase();
-    await prisma.$disconnect();
-    await closeQueues().catch(() => undefined);
-    closeTokenBlacklist();
-    app.log.info('Graceful shutdown complete');
-    process.exit(0);
-  } catch (err) {
-    app.log.error({ err }, 'Error during shutdown');
-    process.exit(1);
-  }
-};
-
-process.on('SIGINT', () => handleShutdown('SIGINT'));
-process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
 // Background workers are opt-in so the API process does not need to compete for
 // Redis connections when a separate worker deployment runs them.
@@ -310,4 +307,3 @@ const startBackgroundWorkers = async (): Promise<void> => {
 void startBackgroundWorkers();
 
 start();
-

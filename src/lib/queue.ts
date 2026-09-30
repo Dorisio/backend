@@ -1,9 +1,13 @@
-import { Queue, Worker, QueueEvents } from 'bullmq';
+import { Queue, QueueEvents, type JobsOptions, type ConnectionOptions } from 'bullmq';
 import IORedis from 'ioredis';
-import { createClient } from 'redis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
+/**
+ * BullMQ connection options. `maxRetriesPerRequest: null` lets commands
+ * queue offline while Redis is unreachable instead of failing immediately
+ * (required by BullMQ workers).
+ */
 export const bullConnection: ConnectionOptions = {
   url: config.REDIS_URL,
   maxRetriesPerRequest: null,
@@ -30,59 +34,53 @@ export const defaultJobOptions: JobsOptions = {
   priority: JobPriority.normal,
 };
 
-// Job queues
-export const stellarConfirmationQueue = new Queue('stellar-confirmation', {
-  connection: redis as any,
-});
-export const webhookDispatchQueue = new Queue('webhook-dispatch', { connection: redis as any });
-export const emailNotificationRedis = new IORedis(config.REDIS_URL, { maxRetriesPerRequest: null });
-export const emailNotificationEventsRedis = emailNotificationRedis.duplicate();
-export const emailNotificationQueue = new Queue('email-notifications', { connection: emailNotificationRedis as any });
+/**
+ * Custom backoff used by every worker (`settings.backoffStrategy`):
+ * delays by `RETRY_DELAYS_MS[attemptsMade - 1]`, clamped to the last entry.
+ */
+export function backoffStrategy(attemptsMade: number): number {
+  const idx = Math.min(Math.max(attemptsMade - 1, 0), RETRY_DELAYS_MS.length - 1);
+  return RETRY_DELAYS_MS[idx];
+}
 
 export function priorityValue(name: JobPriorityName = 'normal'): number {
   return JobPriority[name];
 }
 
-export const webhookDispatchEvents = new QueueEvents('webhook-dispatch', {
-  connection: redis as any,
-});
-export const emailNotificationEvents = new QueueEvents('email-notifications', { connection: emailNotificationEventsRedis as any });
-
 export const QUEUE_NAMES = {
   stellarConfirmation: 'stellar-confirmation',
   webhookDispatch: 'webhook-dispatch',
   email: 'email',
+  emailNotifications: 'email-notifications',
   imageProcessing: 'image-processing',
   analytics: 'analytics',
   exports: 'exports',
   deadLetter: 'dead-letter',
 } as const;
 
-export const stellarConfirmationQueue = new Queue(QUEUE_NAMES.stellarConfirmation, {
-  connection,
-  defaultJobOptions
-});
-export const webhookDispatchQueue = new Queue(QUEUE_NAMES.webhookDispatch, {
-  connection,
-  defaultJobOptions
-});
-export const emailQueue = new Queue(QUEUE_NAMES.email, {
-  connection,
-  defaultJobOptions
-});
-export const imageProcessingQueue = new Queue(QUEUE_NAMES.imageProcessing, {
-  connection,
-  defaultJobOptions
-});
-export const analyticsQueue = new Queue(QUEUE_NAMES.analytics, {
-  connection,
-  defaultJobOptions
-});
-export const exportsQueue = new Queue(QUEUE_NAMES.exports, {
-  connection,
-  defaultJobOptions
-});
-export const deadLetterQueue = new Queue(QUEUE_NAMES.deadLetter, { connection });
+/**
+ * Creates a queue on the shared connection and routes connection errors
+ * through the logger. Without the `error` listener BullMQ falls back to
+ * `console.error` when Redis is unreachable.
+ */
+function createQueue(name: string, options?: JobsOptions): Queue {
+  const queue = options
+    ? new Queue(name, { connection: bullConnection, defaultJobOptions: options })
+    : new Queue(name, { connection: bullConnection });
+  queue.on('error', (error: Error) =>
+    logger.warn({ queue: name, error: error.message }, 'queue connection error'),
+  );
+  return queue;
+}
+
+export const stellarConfirmationQueue = createQueue(QUEUE_NAMES.stellarConfirmation, defaultJobOptions);
+export const webhookDispatchQueue = createQueue(QUEUE_NAMES.webhookDispatch, defaultJobOptions);
+export const emailQueue = createQueue(QUEUE_NAMES.email, defaultJobOptions);
+export const emailNotificationQueue = createQueue(QUEUE_NAMES.emailNotifications, defaultJobOptions);
+export const imageProcessingQueue = createQueue(QUEUE_NAMES.imageProcessing, defaultJobOptions);
+export const analyticsQueue = createQueue(QUEUE_NAMES.analytics, defaultJobOptions);
+export const exportsQueue = createQueue(QUEUE_NAMES.exports, defaultJobOptions);
+export const deadLetterQueue = createQueue(QUEUE_NAMES.deadLetter);
 
 export const allQueues = [
   stellarConfirmationQueue,
@@ -94,8 +92,23 @@ export const allQueues = [
   deadLetterQueue,
 ];
 
-function attachEvents(name: string) {
-  const events = new QueueEvents(name, { connection });
+/**
+ * Dedicated client for the email notification worker (it spawns its own
+ * connection via `.duplicate()`), so worker reconnects never disturb the
+ * shared queue connections.
+ */
+export const emailNotificationRedis = new IORedis(config.REDIS_URL, {
+  maxRetriesPerRequest: null,
+});
+emailNotificationRedis.on('error', (error: Error) =>
+  logger.warn({ error: error.message }, 'email notification redis error'),
+);
+
+function attachEvents(name: string): QueueEvents {
+  const events = new QueueEvents(name, { connection: bullConnection });
+  events.on('error', (error: Error) =>
+    logger.warn({ queue: name, error: error.message }, 'queue events connection error'),
+  );
   events.on('completed', ({ jobId }) => logger.info({ queue: name, jobId }, 'job completed'));
   events.on('failed', ({ jobId, failedReason }) =>
     logger.error({ queue: name, jobId, failedReason }, 'job failed'),
@@ -109,6 +122,7 @@ function attachEvents(name: string) {
 export const stellarConfirmationEvents = attachEvents(QUEUE_NAMES.stellarConfirmation);
 export const webhookDispatchEvents = attachEvents(QUEUE_NAMES.webhookDispatch);
 export const emailEvents = attachEvents(QUEUE_NAMES.email);
+export const emailNotificationEvents = attachEvents(QUEUE_NAMES.emailNotifications);
 export const imageProcessingEvents = attachEvents(QUEUE_NAMES.imageProcessing);
 export const analyticsEvents = attachEvents(QUEUE_NAMES.analytics);
 export const exportsEvents = attachEvents(QUEUE_NAMES.exports);
@@ -133,8 +147,18 @@ export async function moveToDeadLetter(
   logger.warn({ sourceQueue, jobId, failedReason }, 'job moved to dead-letter queue');
 }
 
-export async function getQueueHealth() {
-  const report = [];
+export interface QueueHealthReport {
+  name: string;
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  depth: number;
+}
+
+export async function getQueueHealth(): Promise<QueueHealthReport[]> {
+  const report: QueueHealthReport[] = [];
   for (const q of allQueues) {
     const [waiting, active, completed, failed, delayed] = await Promise.all([
       q.getWaitingCount(),
@@ -156,21 +180,35 @@ export async function getQueueHealth() {
   return report;
 }
 
-emailNotificationEvents.on('completed', ({ jobId }) => {
-  logger.info({ jobId }, 'Email notification delivered');
-});
-emailNotificationEvents.on('failed', ({ jobId, failedReason }) => {
-  logger.error({ jobId, failedReason }, 'Email notification delivery failed');
-});
+/** How long closeQueues may block before giving up on an unreachable Redis. */
+const CLOSE_TIMEOUT_MS = 3_000;
 
-export async function closeQueues() {
-  await stellarConfirmationQueue.close();
-  await webhookDispatchQueue.close();
-  await emailNotificationQueue.close();
-  await stellarConfirmationEvents.close();
-  await webhookDispatchEvents.close();
-  await emailNotificationEvents.close();
-  await emailNotificationRedis.quit();
-  await emailNotificationEventsRedis.quit();
-  await redis.quit();
+/**
+ * Closes every queue, event listener and the email notification client.
+ *
+ * BullMQ/ioredis buffer commands while Redis is down, which makes `close()`
+ * block indefinitely — shutdown must not hang on a dead Redis, so the wait
+ * is capped and every outcome (including rejection) is swallowed here.
+ */
+export async function closeQueues(): Promise<void> {
+  const closables: Promise<unknown>[] = [
+    ...allQueues.map((q) => q.close()),
+    emailNotificationQueue.close(),
+    stellarConfirmationEvents.close(),
+    webhookDispatchEvents.close(),
+    emailEvents.close(),
+    emailNotificationEvents.close(),
+    imageProcessingEvents.close(),
+    analyticsEvents.close(),
+    exportsEvents.close(),
+    emailNotificationRedis.quit().catch(() => undefined),
+  ];
+
+  await Promise.race([
+    Promise.allSettled(closables),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
+      timer.unref();
+    }),
+  ]);
 }

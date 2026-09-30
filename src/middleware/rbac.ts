@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { UserRole, hasAnyRole } from '../utils/roles';
-import { UnauthorizedError } from '../utils/errors';
+import { UnauthorizedError, ForbiddenError } from '../utils/errors';
 import { authMiddleware } from './auth';
 import { registerAuthGuard } from './auth-guards';
 
@@ -13,7 +13,9 @@ export const requireRole = (allowedRoles: UserRole[]) => {
     }
 
     if (!hasAnyRole(request.user.role, allowedRoles)) {
-      throw new UnauthorizedError('Insufficient permissions');
+      // Authenticated but lacking the role: 403, not 401. 401 would tell
+      // clients to (re-)authenticate, which cannot fix a missing permission.
+      throw new ForbiddenError('Insufficient permissions');
     }
   });
 };

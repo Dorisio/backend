@@ -52,10 +52,7 @@ export const registerAnalyticsRoutes = (app: FastifyInstance, prisma: PrismaClie
     '/api/v1/analytics/earnings',
     {
       preHandler: authMiddleware,
-      schema {
-
-
-
+      schema: {
         querystring: {
           type: 'object',
           properties: {

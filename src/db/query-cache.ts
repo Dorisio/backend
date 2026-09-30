@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { config } from '../config/env';
 import { collapseWhitespace } from './query-logger';
 
 export interface CacheEntry<T> {
@@ -315,3 +316,14 @@ export class QueryCache {
     }
   }
 }
+
+/**
+ * Shared application-wide instance of {@link QueryCache} (read-query result
+ * cache, issue #12). Service layers such as analytics import this singleton
+ * instead of constructing their own; sizing comes from DB_QUERY_CACHE_*.
+ */
+export const queryCache = new QueryCache({
+  defaultTtlMs: config.DB_QUERY_CACHE_TTL_MS,
+  maxTtlMs: config.DB_QUERY_CACHE_MAX_TTL_MS,
+  maxEntries: config.DB_QUERY_CACHE_MAX_ENTRIES,
+});
