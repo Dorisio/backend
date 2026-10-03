@@ -91,7 +91,10 @@ function createQueue(name: string, connection: ConnectionOptions | RedisClient):
 }
 
 // ── First-class queues (generic jobs layer) ──────────────────────────────────
-export const stellarConfirmationQueue = createQueue(QUEUE_NAMES.stellarConfirmation, bullConnection);
+export const stellarConfirmationQueue = createQueue(
+  QUEUE_NAMES.stellarConfirmation,
+  bullConnection
+);
 export const webhookDispatchQueue = createQueue(QUEUE_NAMES.webhookDispatch, bullConnection);
 export const emailQueue = createQueue(QUEUE_NAMES.email, bullConnection);
 export const imageProcessingQueue = createQueue(QUEUE_NAMES.imageProcessing, bullConnection);
@@ -131,7 +134,10 @@ function attachEvents(name: string, connection: ConnectionOptions | RedisClient)
   return events;
 }
 
-export const stellarConfirmationEvents = attachEvents(QUEUE_NAMES.stellarConfirmation, bullConnection);
+export const stellarConfirmationEvents = attachEvents(
+  QUEUE_NAMES.stellarConfirmation,
+  bullConnection
+);
 export const webhookDispatchEvents = attachEvents(QUEUE_NAMES.webhookDispatch, bullConnection);
 export const emailEvents = attachEvents(QUEUE_NAMES.email, bullConnection);
 export const imageProcessingEvents = attachEvents(QUEUE_NAMES.imageProcessing, bullConnection);

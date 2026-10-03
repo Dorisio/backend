@@ -118,7 +118,7 @@ export class HttpClient {
    */
   private handleRequest(config: AxiosRequestConfig): AxiosRequestConfig {
     const requestId = config.headers?.['X-Request-Id'] || this.generateRequestId();
-    
+
     // Add request ID for tracing
     config.headers = {
       ...config.headers,
@@ -152,7 +152,7 @@ export class HttpClient {
    */
   private handleResponse(response: AxiosResponse): AxiosResponse {
     const duration = Date.now() - ((response.config as any).startTime || Date.now());
-    
+
     logger.info(
       {
         method: response.config.method?.toUpperCase(),
@@ -172,7 +172,7 @@ export class HttpClient {
    */
   private handleResponseError(error: AxiosError): Promise<never> {
     const duration = Date.now() - ((error.config as any)?.startTime || Date.now());
-    
+
     logger.error(
       {
         method: error.config?.method?.toUpperCase(),
@@ -317,7 +317,7 @@ export class HttpClient {
    */
   private getRetryAfterMs(error: any): number {
     const retryAfter = error.response?.headers?.['retry-after'];
-    
+
     if (!retryAfter) {
       return this.retryDelayMs;
     }
@@ -363,10 +363,7 @@ export class HttpClient {
    * GET request
    */
   public async get<T = any>(url: string, options?: RequestOptions): Promise<AxiosResponse<T>> {
-    return this.executeWithRetry(
-      () => this.client.get<T>(url, options),
-      options
-    );
+    return this.executeWithRetry(() => this.client.get<T>(url, options), options);
   }
 
   /**
@@ -377,10 +374,7 @@ export class HttpClient {
     data?: any,
     options?: RequestOptions
   ): Promise<AxiosResponse<T>> {
-    return this.executeWithRetry(
-      () => this.client.post<T>(url, data, options),
-      options
-    );
+    return this.executeWithRetry(() => this.client.post<T>(url, data, options), options);
   }
 
   /**
@@ -391,10 +385,7 @@ export class HttpClient {
     data?: any,
     options?: RequestOptions
   ): Promise<AxiosResponse<T>> {
-    return this.executeWithRetry(
-      () => this.client.put<T>(url, data, options),
-      options
-    );
+    return this.executeWithRetry(() => this.client.put<T>(url, data, options), options);
   }
 
   /**
@@ -405,20 +396,14 @@ export class HttpClient {
     data?: any,
     options?: RequestOptions
   ): Promise<AxiosResponse<T>> {
-    return this.executeWithRetry(
-      () => this.client.patch<T>(url, data, options),
-      options
-    );
+    return this.executeWithRetry(() => this.client.patch<T>(url, data, options), options);
   }
 
   /**
    * DELETE request
    */
   public async delete<T = any>(url: string, options?: RequestOptions): Promise<AxiosResponse<T>> {
-    return this.executeWithRetry(
-      () => this.client.delete<T>(url, options),
-      options
-    );
+    return this.executeWithRetry(() => this.client.delete<T>(url, options), options);
   }
 
   /**

@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { ConflictError, NotFoundError, ValidationError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
+import { WebhookService } from '../webhooks/webhook.service';
 import { enqueueEmail } from '../notifications/email';
 import {
   getVerificationDocumentPath,
@@ -28,7 +29,7 @@ export class VerificationService extends BaseService {
 
   async submitRequest(
     userId: string,
-    input: { statement?: string; documents: VerificationDocumentInput[] },
+    input: { statement?: string; documents: VerificationDocumentInput[] }
   ) {
     return this.executeWithLogging('creator.verification.submit', async () => {
       await this.expireDueRequests();
@@ -60,7 +61,17 @@ export class VerificationService extends BaseService {
               expiresAt: new Date(Date.now() + PENDING_REQUEST_TTL_MS),
               documents: { create: documents },
             },
-            include: { documents: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } } },
+            include: {
+              documents: {
+                select: {
+                  id: true,
+                  filename: true,
+                  contentType: true,
+                  size: true,
+                  createdAt: true,
+                },
+              },
+            },
           });
           await tx.creatorVerificationEvent.create({
             data: {
@@ -88,13 +99,18 @@ export class VerificationService extends BaseService {
   async getRequestHistory(userId: string) {
     return this.executeWithLogging('creator.verification.history', async () => {
       await this.expireDueRequests();
-      const creator = await this.prisma.creator.findUnique({ where: { userId }, select: { id: true } });
+      const creator = await this.prisma.creator.findUnique({
+        where: { userId },
+        select: { id: true },
+      });
       if (!creator) throw new NotFoundError('Creator');
       return this.prisma.creatorVerificationRequest.findMany({
         where: { creatorId: creator.id },
         orderBy: { createdAt: 'desc' },
         include: {
-          documents: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } },
+          documents: {
+            select: { id: true, filename: true, contentType: true, size: true, createdAt: true },
+          },
           events: { orderBy: { createdAt: 'asc' } },
         },
       });
@@ -115,12 +131,20 @@ export class VerificationService extends BaseService {
           take: safePageSize,
           include: {
             creator: { include: { user: { select: { id: true, email: true, name: true } } } },
-            documents: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } },
+            documents: {
+              select: { id: true, filename: true, contentType: true, size: true, createdAt: true },
+            },
           },
         }),
         this.prisma.creatorVerificationRequest.count({ where }),
       ]);
-      return { items, total, page: safePage, pageSize: safePageSize, totalPages: Math.ceil(total / safePageSize) };
+      return {
+        items,
+        total,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages: Math.ceil(total / safePageSize),
+      };
     });
   }
 
@@ -128,17 +152,20 @@ export class VerificationService extends BaseService {
     requestId: string,
     reviewerId: string,
     decision: VerificationDecision,
-    reason?: string,
+    reason?: string
   ) {
     return this.executeWithLogging(`creator.verification.${decision}`, async () => {
       const now = new Date();
       await this.expireDueRequests(now);
       const request = await this.prisma.creatorVerificationRequest.findUnique({
         where: { id: requestId },
-        include: { creator: { include: { user: { select: { id: true, email: true, name: true } } } } },
+        include: {
+          creator: { include: { user: { select: { id: true, email: true, name: true } } } },
+        },
       });
       if (!request) throw new NotFoundError('Verification request');
-      if (request.status !== 'submitted') throw new ConflictError('Verification request is no longer pending');
+      if (request.status !== 'submitted')
+        throw new ConflictError('Verification request is no longer pending');
 
       const verifiedUntil = new Date(now.getTime() + VERIFICATION_DURATION_MS);
       const result = await this.prisma.$transaction(async (tx) => {
@@ -152,7 +179,8 @@ export class VerificationService extends BaseService {
             ...(decision === 'approved' ? { expiresAt: verifiedUntil } : {}),
           },
         });
-        if (changed.count === 0) throw new ConflictError('Verification request is no longer pending');
+        if (changed.count === 0)
+          throw new ConflictError('Verification request is no longer pending');
 
         if (decision === 'approved') {
           await tx.creator.update({
@@ -167,20 +195,41 @@ export class VerificationService extends BaseService {
             actorId: reviewerId,
             action: decision,
             reason: reason?.trim() || null,
-            metadata: decision === 'approved' ? { verifiedUntil: verifiedUntil.toISOString() } : undefined,
+            metadata:
+              decision === 'approved' ? { verifiedUntil: verifiedUntil.toISOString() } : undefined,
           },
         });
         return tx.creatorVerificationRequest.findUniqueOrThrow({
           where: { id: requestId },
-          include: { documents: { select: { id: true, filename: true, contentType: true, size: true, createdAt: true } } },
+          include: {
+            documents: {
+              select: { id: true, filename: true, contentType: true, size: true, createdAt: true },
+            },
+          },
         });
       });
+
+      if (decision === 'approved') {
+        logger.info(`Creator verified: ${request.creatorId}`);
+
+        await new WebhookService(this.prisma).dispatchEvent(
+          request.creatorId,
+          request.creatorId,
+          'creator.verified',
+          { creatorId: request.creatorId }
+        );
+      }
+
       await this.notify(request.creator.user, decision, reason);
       return result;
     });
   }
 
-  async unverifyCreator(creatorId: string, actorId: string, reason: string): Promise<{ verified: boolean }> {
+  async unverifyCreator(
+    creatorId: string,
+    actorId: string,
+    reason: string
+  ): Promise<{ verified: boolean }> {
     return this.executeWithLogging('creator.verification.revoke', async () => {
       const creator = await this.prisma.creator.findUnique({
         where: { id: creatorId },
@@ -210,7 +259,9 @@ export class VerificationService extends BaseService {
   }
 
   async getVerificationDocument(documentId: string) {
-    const document = await this.prisma.creatorVerificationDocument.findUnique({ where: { id: documentId } });
+    const document = await this.prisma.creatorVerificationDocument.findUnique({
+      where: { id: documentId },
+    });
     if (!document) throw new NotFoundError('Verification document');
     return { ...document, path: getVerificationDocumentPath(document.storageKey) };
   }
@@ -218,7 +269,9 @@ export class VerificationService extends BaseService {
   async expireDueRequests(now = new Date()): Promise<number> {
     const expired = await this.prisma.creatorVerificationRequest.findMany({
       where: { status: { in: ['submitted', 'approved'] }, expiresAt: { lte: now } },
-      include: { creator: { include: { user: { select: { id: true, email: true, name: true } } } } },
+      include: {
+        creator: { include: { user: { select: { id: true, email: true, name: true } } } },
+      },
     });
     let count = 0;
     for (const request of expired) {
@@ -250,7 +303,7 @@ export class VerificationService extends BaseService {
   private async notify(
     user: { id: string; email: string; name: string | null },
     status: string,
-    reason?: string,
+    reason?: string
   ): Promise<void> {
     try {
       await enqueueEmail({
@@ -261,7 +314,10 @@ export class VerificationService extends BaseService {
         eventType: `creator_verification.${status}`,
       });
     } catch (error) {
-      logger.error({ error, userId: user.id, status }, 'Failed to enqueue creator verification email');
+      logger.error(
+        { error, userId: user.id, status },
+        'Failed to enqueue creator verification email'
+      );
     }
   }
 

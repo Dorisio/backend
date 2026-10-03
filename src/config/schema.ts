@@ -124,9 +124,9 @@ export const EnvSchemaObject = z.object({
   NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
   PORT: int(3000, { min: 1, max: 65_535 }),
   HTTP2_ENABLED: bool(false),
-  RESPONSE_COMPRESSION_ENABLED: bool(true),
-  RESPONSE_CACHE_CONTROL: z.string().default('private, no-cache'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+  RESPONSE_CACHE_CONTROL: z.string().default('private, no-cache'),
+  RESPONSE_COMPRESSION_ENABLED: bool(true),
   // Max time (ms) to wait for in-flight requests to drain on SIGTERM/SIGINT (#23).
   SHUTDOWN_TIMEOUT_MS: int(30_000, { min: 1_000, max: 300_000 }),
   // Swagger server host (e.g. api.example.com). Empty = localhost.
@@ -134,6 +134,10 @@ export const EnvSchemaObject = z.object({
 
   // ── Database ───────────────────────────────────────────────────────────
   DATABASE_URL: optionalString,
+  DATABASE_READ_REPLICA_URLS: optionalString,
+  DB_REPLICA_ENABLED: bool(false),
+  DB_REPLICA_LAG_TOLERANCE_SECONDS: int(5, { min: 0, max: 300 }),
+  DB_REPLICA_HEALTHCHECK_INTERVAL_MS: int(10_000, { min: 1_000, max: 600_000 }),
   DB_POOL_MIN: int(2, { min: 1, max: 100 }),
   DB_POOL_MAX: int(20, { min: 1, max: 100 }),
   DB_CONNECTION_TIMEOUT_MS: int(5_000, { min: 100, max: 60_000 }),
@@ -150,62 +154,6 @@ export const EnvSchemaObject = z.object({
   DB_LEAK_DETECTION_TIMEOUT_MS: int(30_000, { min: 1_000, max: 300_000 }),
   DB_CIRCUIT_BREAKER_FAILURES: int(5, { min: 1, max: 100 }),
   DB_CIRCUIT_BREAKER_RESET_MS: int(10_000, { min: 100, max: 600_000 }),
-  // PostgreSQL transport security. Production/staging require TLS; local
-  // development may opt into `prefer` for self-signed databases.
-  DB_SSL_MODE: z
-    .enum(['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'])
-    .default('prefer'),
-  DB_SSL_REJECT_UNAUTHORIZED: bool(true),
-  DB_SSL_CA: optionalString,
-  DB_SSL_CERT: optionalString,
-  DB_SSL_KEY: optionalString,
-  DB_SSL_SERVERNAME: optionalString,
-  // Backup verification is opt-in so an API process never restores data by
-  // accident; the dedicated worker/CI job enables it explicitly.
-  BACKUP_VERIFICATION_ENABLED: bool(false),
-  BACKUP_VERIFICATION_CRON: z.string().default('0 3 * * 0'),
-  BACKUP_VERIFICATION_TIMEOUT_MS: int(300_000, { min: 1_000, max: 3_600_000 }),
-  BACKUP_VERIFICATION_MAX_RESTORE_MS: int(120_000, { min: 1_000, max: 3_600_000 }),
-  BACKUP_DIRECTORY: z.string().default('./private/backups'),
-  BACKUP_SECONDARY_DIRECTORY: z.string().default('./private/backups-secondary'),
-  BACKUP_ENCRYPTION_KEY: optionalString,
-  BACKUP_VERIFICATION_HISTORY_PATH: z.string().default('./private/backup-verification.jsonl'),
-export const EnvSchemaObject = z
-  .object({
-    // ── Runtime ────────────────────────────────────────────────────────────
-    NODE_ENV: z.enum(['development', 'staging', 'production', 'test']).default('development'),
-    PORT: int(3000, { min: 1, max: 65_535 }),
-    HTTP2_ENABLED: bool(false),
-    LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-    RESPONSE_CACHE_CONTROL: z.string().default('private, no-cache'),
-    RESPONSE_COMPRESSION_ENABLED: bool(true),
-    // Max time (ms) to wait for in-flight requests to drain on SIGTERM/SIGINT (#23).
-    SHUTDOWN_TIMEOUT_MS: int(30_000, { min: 1_000, max: 300_000 }),
-    // Swagger server host (e.g. api.example.com). Empty = localhost.
-    API_HOST: optionalString,
-
-    // ── Database ───────────────────────────────────────────────────────────
-    DATABASE_URL: optionalString,
-    DATABASE_READ_REPLICA_URLS: optionalString,
-    DB_REPLICA_ENABLED: bool(false),
-    DB_REPLICA_LAG_TOLERANCE_SECONDS: int(5, { min: 0, max: 300 }),
-    DB_REPLICA_HEALTHCHECK_INTERVAL_MS: int(10_000, { min: 1_000, max: 600_000 }),
-    DB_POOL_MIN: int(2, { min: 1, max: 100 }),
-    DB_POOL_MAX: int(20, { min: 1, max: 100 }),
-    DB_CONNECTION_TIMEOUT_MS: int(5_000, { min: 100, max: 60_000 }),
-    DB_IDLE_TIMEOUT_MS: int(30_000, { min: 0, max: 300_000 }),
-    DB_MAX_LIFETIME_MS: int(1_800_000, { min: 1_000, max: 3_600_000 }),
-    DB_STATEMENT_TIMEOUT_MS: int(10_000, { min: 0, max: 600_000 }),
-    DB_SLOW_QUERY_THRESHOLD_MS: int(200, { min: 1, max: 60_000 }),
-    DB_LOG_QUERIES: bool(false),
-    // Read-query result cache (1-5 minutes, per issue #12)
-    DB_QUERY_CACHE_TTL_MS: int(60_000, { min: 1_000, max: 300_000 }),
-    DB_QUERY_CACHE_MAX_TTL_MS: int(300_000, { min: 1_000, max: 600_000 }),
-    DB_QUERY_CACHE_MAX_ENTRIES: int(1_000, { min: 10, max: 100_000 }),
-    DB_QUERY_CACHE_ENABLED: bool(true),
-    DB_LEAK_DETECTION_TIMEOUT_MS: int(30_000, { min: 1_000, max: 300_000 }),
-    DB_CIRCUIT_BREAKER_FAILURES: int(5, { min: 1, max: 100 }),
-    DB_CIRCUIT_BREAKER_RESET_MS: int(10_000, { min: 100, max: 600_000 }),
 
   // ── Circuit breakers (external services) ──────────────────────────────
   CIRCUIT_BREAKER_FAILURE_THRESHOLD: num(0.5, { min: 0, max: 1 }),
@@ -281,38 +229,38 @@ export const EnvSchemaObject = z
   VERIFICATION_DOCUMENT_STORAGE_PATH: z.string().default('./private/verification-documents'),
   SENDGRID_API_KEY: optionalString,
   EMAIL_FROM: optionalEmail,
-    // ── Email ──────────────────────────────────────────────────────────────
-    FRONTEND_URL: z.string().default('http://localhost:3000'),
-    VERIFICATION_DOCUMENT_STORAGE_PATH: z.string().default('./private/verification-documents'),
-    SENDGRID_API_KEY: optionalString,
-    EMAIL_FROM: optionalEmail,
+  // ── Email ──────────────────────────────────────────────────────────────
+  FRONTEND_URL: z.string().default('http://localhost:3000'),
+  VERIFICATION_DOCUMENT_STORAGE_PATH: z.string().default('./private/verification-documents'),
+  SENDGRID_API_KEY: optionalString,
+  EMAIL_FROM: optionalEmail,
 
-    // ── HTTP surface ───────────────────────────────────────────────────────
-    RESPONSE_CACHE_CONTROL: z.string().default('private, no-cache'),
-    // Reverse proxy trust: false | number of hops | comma separated CIDR list.
-    TRUST_PROXY: z.string().default('false'),
-    CORS_ORIGINS: optionalString,
-    CORS_CREDENTIALS: bool(true),
-    CORS_MAX_AGE: int(600, { min: 0, max: 86_400 }),
+  // ── HTTP surface ───────────────────────────────────────────────────────
+  RESPONSE_CACHE_CONTROL: z.string().default('private, no-cache'),
+  // Reverse proxy trust: false | number of hops | comma separated CIDR list.
+  TRUST_PROXY: z.string().default('false'),
+  CORS_ORIGINS: optionalString,
+  CORS_CREDENTIALS: bool(true),
+  CORS_MAX_AGE: int(600, { min: 0, max: 86_400 }),
 
-    // ── Rate limiting (see src/config/rate-limit.ts) ───────────────────────
-    RATE_LIMIT_ENABLED: bool(true),
-    RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
-    RATE_LIMIT_PUBLIC_MAX: int(100, { min: 1, max: 100_000 }),
-    RATE_LIMIT_PUBLIC_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
-    RATE_LIMIT_AUTHENTICATED_MAX: int(300, { min: 1, max: 100_000 }),
-    RATE_LIMIT_AUTHENTICATED_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
-    RATE_LIMIT_SENSITIVE_MAX: int(10, { min: 1, max: 1_000 }),
-    RATE_LIMIT_SENSITIVE_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
+  // ── Rate limiting (see src/config/rate-limit.ts) ───────────────────────
+  RATE_LIMIT_ENABLED: bool(true),
+  RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
+  RATE_LIMIT_PUBLIC_MAX: int(100, { min: 1, max: 100_000 }),
+  RATE_LIMIT_PUBLIC_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
+  RATE_LIMIT_AUTHENTICATED_MAX: int(300, { min: 1, max: 100_000 }),
+  RATE_LIMIT_AUTHENTICATED_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
+  RATE_LIMIT_SENSITIVE_MAX: int(10, { min: 1, max: 1_000 }),
+  RATE_LIMIT_SENSITIVE_WINDOW_MS: int(60_000, { min: 1_000, max: 3_600_000 }),
 
-    // ── API versioning ─────────────────────────────────────────────────────
-    SUPPORTED_API_VERSIONS: z.string().default('1,2'),
-    API_V1_SUNSET_DATE: z.string().optional(),
+  // ── API versioning ─────────────────────────────────────────────────────
+  SUPPORTED_API_VERSIONS: z.string().default('1,2'),
+  API_V1_SUNSET_DATE: z.string().optional(),
 
-    // ── GraphQL ────────────────────────────────────────────────────────────
-    GRAPHQL_ENABLED: bool(true),
-    GRAPHQL_MAX_DEPTH: int(10, { min: 1, max: 100 }),
-    GRAPHQL_MAX_COMPLEXITY: int(1_000, { min: 1, max: 100_000 }),
+  // ── GraphQL ────────────────────────────────────────────────────────────
+  GRAPHQL_ENABLED: bool(true),
+  GRAPHQL_MAX_DEPTH: int(10, { min: 1, max: 100 }),
+  GRAPHQL_MAX_COMPLEXITY: int(1_000, { min: 1, max: 100_000 }),
 
   // ── Feature flags (see src/config/features.ts) ─────────────────────────
   // Defaults are environment-aware; src/config/features.ts resolves them and

@@ -5,12 +5,12 @@ import { AuditService } from '../../services/audit.service';
 
 /**
  * Creator webhook signature verification for incoming webhooks.
- * 
+ *
  * Implements HMAC-SHA256 signature verification with:
  * - Timestamp expiration checking (5 minute window)
  * - Nonce-based replay attack prevention
  * - Secret rotation support (validates both current and previous secret during transition)
- * 
+ *
  * Expected headers:
  * - X-Webhook-Signature: HMAC-SHA256 signature of request body
  * - X-Webhook-Timestamp: Unix timestamp (seconds)
@@ -45,7 +45,9 @@ export interface VerifyOptions {
 /**
  * Parse webhook verification headers from request
  */
-export function parseWebhookHeaders(headers: Record<string, string | string[] | undefined>): WebhookVerificationHeaders {
+export function parseWebhookHeaders(
+  headers: Record<string, string | string[] | undefined>
+): WebhookVerificationHeaders {
   const getHeader = (key: string): string | undefined => {
     const value = headers[key.toLowerCase()];
     return Array.isArray(value) ? value[0] : value;
@@ -61,7 +63,12 @@ export function parseWebhookHeaders(headers: Record<string, string | string[] | 
 /**
  * Compute HMAC-SHA256 signature
  */
-export function computeWebhookSignature(payload: string, secret: string, timestamp: number, nonce: string): string {
+export function computeWebhookSignature(
+  payload: string,
+  secret: string,
+  timestamp: number,
+  nonce: string
+): string {
   const signedPayload = `${timestamp}.${nonce}.${payload}`;
   return createHmac('sha256', secret).update(signedPayload).digest('hex');
 }
@@ -95,7 +102,11 @@ function isTimestampValid(timestamp: number, tolerance: number, now: number): bo
 /**
  * Check if nonce has been used before (replay attack detection)
  */
-async function isNonceUsed(prisma: PrismaClient, webhookId: string, nonce: string): Promise<boolean> {
+async function isNonceUsed(
+  prisma: PrismaClient,
+  webhookId: string,
+  nonce: string
+): Promise<boolean> {
   const existingNonce = await prisma.webhookNonce.findUnique({
     where: { nonce },
     select: { id: true },
@@ -200,7 +211,10 @@ export async function verifyCreatorWebhookSignature(
   // Parse timestamp
   const timestamp = parseInt(headers.timestamp, 10);
   if (isNaN(timestamp)) {
-    logger.warn({ webhookId, timestamp: headers.timestamp, ipAddress }, 'Webhook verification failed: invalid timestamp');
+    logger.warn(
+      { webhookId, timestamp: headers.timestamp, ipAddress },
+      'Webhook verification failed: invalid timestamp'
+    );
     await auditService.record({
       action: 'webhook.verification_failed',
       resource: 'webhook',
@@ -282,7 +296,12 @@ export async function verifyCreatorWebhookSignature(
   }
 
   // Compute expected signature with current secret
-  const expectedSignature = computeWebhookSignature(payload, webhook.secret, timestamp, headers.nonce);
+  const expectedSignature = computeWebhookSignature(
+    payload,
+    webhook.secret,
+    timestamp,
+    headers.nonce
+  );
   const currentSecretValid = safeEqual(headers.signature, expectedSignature);
 
   if (currentSecretValid) {
@@ -337,10 +356,7 @@ export async function verifyCreatorWebhookSignature(
   }
 
   // Signature verification failed
-  logger.warn(
-    { webhookId, timestamp },
-    'Webhook verification failed: signature mismatch'
-  );
+  logger.warn({ webhookId, timestamp }, 'Webhook verification failed: signature mismatch');
   return {
     valid: false,
     reason: 'Signature mismatch',

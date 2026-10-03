@@ -4,7 +4,7 @@ import { Counter, Histogram } from 'prom-client';
 
 /**
  * CDN Service
- * 
+ *
  * Provides CDN integration for static assets and media:
  * - CloudFlare or AWS CloudFront support
  * - Asset versioning and cache busting
@@ -86,24 +86,32 @@ const cdnResponseTime = new Histogram({
  */
 export const DEFAULT_CACHE_RULES: CacheRule[] = [
   // Immutable assets with hash in filename (forever cache)
-  { pattern: /\.(js|css|woff2?|ttf|eot|otf)\.\w{8,}\.(js|css|woff2?|ttf|eot|otf)$/, ttl: 31536000, immutable: true },
-  { pattern: /\.(jpg|jpeg|png|gif|webp|svg|ico)\.\w{8,}\.(jpg|jpeg|png|gif|webp|svg|ico)$/, ttl: 31536000, immutable: true },
-  
+  {
+    pattern: /\.(js|css|woff2?|ttf|eot|otf)\.\w{8,}\.(js|css|woff2?|ttf|eot|otf)$/,
+    ttl: 31536000,
+    immutable: true,
+  },
+  {
+    pattern: /\.(jpg|jpeg|png|gif|webp|svg|ico)\.\w{8,}\.(jpg|jpeg|png|gif|webp|svg|ico)$/,
+    ttl: 31536000,
+    immutable: true,
+  },
+
   // Versioned assets (1 year)
   { pattern: /\/v\d+\//, ttl: 31536000, immutable: true },
-  
+
   // Static assets (1 month)
   { pattern: /\.(js|css|woff2?|ttf|eot|otf)$/, ttl: 2592000, immutable: false },
-  
+
   // Images (1 week)
   { pattern: /\.(jpg|jpeg|png|gif|webp|svg|ico|avif)$/, ttl: 604800, immutable: false },
-  
+
   // Videos (1 month)
   { pattern: /\.(mp4|webm|ogg|avi|mov)$/, ttl: 2592000, immutable: false },
-  
+
   // Fonts (1 year)
   { pattern: /\.(woff2?|ttf|eot|otf)$/, ttl: 31536000, immutable: false },
-  
+
   // API responses (no cache by default)
   { pattern: /^\/api\//, ttl: 0, immutable: false },
 ];
@@ -152,11 +160,7 @@ export class CDNService {
    * Generate content hash for cache busting
    */
   public generateHash(content: Buffer | string, length: number = 8): string {
-    return crypto
-      .createHash('sha256')
-      .update(content)
-      .digest('hex')
-      .substring(0, length);
+    return crypto.createHash('sha256').update(content).digest('hex').substring(0, length);
   }
 
   /**
@@ -213,7 +217,7 @@ export class CDNService {
     }
 
     const parts = [`public`, `max-age=${ttl}`];
-    
+
     if (immutable) {
       parts.push('immutable');
     }
@@ -246,11 +250,14 @@ export class CDNService {
 
       const duration = Date.now() - startTime;
       cdnResponseTime.observe({ provider: this.config.provider, operation: 'purge' }, duration);
-      
+
       if (success) {
         this.metrics.purges++;
         cdnPurgesTotal.inc({ provider: this.config.provider, status: 'success' });
-        logger.info({ urls, duration, provider: this.config.provider }, 'CDN cache purged successfully');
+        logger.info(
+          { urls, duration, provider: this.config.provider },
+          'CDN cache purged successfully'
+        );
       } else {
         cdnPurgesTotal.inc({ provider: this.config.provider, status: 'failure' });
         logger.error({ urls, duration, provider: this.config.provider }, 'CDN cache purge failed');
@@ -281,14 +288,14 @@ export class CDNService {
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${this.config.apiToken}`,
+            Authorization: `Bearer ${this.config.apiToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ files: urls }),
         }
       );
 
-      const data = await response.json() as { success: boolean };
+      const data = (await response.json()) as { success: boolean };
       return data.success;
     } catch (error) {
       logger.error({ error }, 'CloudFlare purge request failed');
@@ -306,7 +313,7 @@ export class CDNService {
     }
 
     // Extract paths from URLs for CloudFront invalidation
-    const paths = urls.map(url => {
+    const paths = urls.map((url) => {
       try {
         const urlObj = new URL(url);
         return urlObj.pathname;
@@ -315,8 +322,10 @@ export class CDNService {
       }
     });
 
-    logger.info({ paths, distributionId: this.config.distributionId }, 
-      'CloudFront invalidation would be created (AWS SDK required)');
+    logger.info(
+      { paths, distributionId: this.config.distributionId },
+      'CloudFront invalidation would be created (AWS SDK required)'
+    );
 
     // Note: Actual CloudFront invalidation requires AWS SDK
     // This is a placeholder for the integration

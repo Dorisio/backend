@@ -27,6 +27,7 @@ const mockPrisma = {
   creator: { findUnique: vi.fn(), update: vi.fn() },
   user: { findUnique: vi.fn() },
   wallet: { findFirst: vi.fn() },
+  stellarAsset: { findFirst: vi.fn() },
   walletFlag: { findFirst: vi.fn() },
   accountFreeze: { findFirst: vi.fn() },
   webhook: { findMany: vi.fn() },
@@ -65,6 +66,8 @@ describe('createTip idempotency (#48)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     service = new PaymentService(mockPrisma as any);
+    mockPrisma.webhook.findMany.mockResolvedValue([]);
+
     mockPrisma.user.findUnique.mockResolvedValue({ id: userId });
     mockPrisma.creator.findUnique.mockResolvedValue({
       id: creatorId,
@@ -72,9 +75,20 @@ describe('createTip idempotency (#48)', () => {
       isPublic: true,
       verified: true,
     });
-    mockPrisma.wallet.findFirst.mockResolvedValue({ id: 'wallet-1', publicKey: 'GABC', verified: true });
+    mockPrisma.wallet.findFirst.mockResolvedValue({
+      id: 'wallet-1',
+      publicKey: 'GABC',
+      verified: true,
+    });
     mockPrisma.walletFlag.findFirst.mockResolvedValue(null);
     mockPrisma.accountFreeze.findFirst.mockResolvedValue(null);
+    mockPrisma.stellarAsset.findFirst.mockResolvedValue({
+      id: 'asset-usdc',
+      code: 'USDC',
+      issuer: 'GUSDCISSUER',
+      enabled: true,
+      priority: 100,
+    });
   });
 
   it('returns the original tip when an idempotency key is replayed', async () => {
@@ -101,7 +115,9 @@ describe('createTip idempotency (#48)', () => {
 
   it('persists the idempotency key on first submission', async () => {
     mockPrisma.tip.findUnique.mockResolvedValue(null);
-    mockPrisma.tip.create.mockResolvedValue(makeTipRow({ id: 'tip-new', idempotencyKey: 'key-12345678' }));
+    mockPrisma.tip.create.mockResolvedValue(
+      makeTipRow({ id: 'tip-new', idempotencyKey: 'key-12345678' })
+    );
 
     await service.createTip(userId, { creatorId, amount: 25, idempotencyKey: 'key-12345678' });
 
@@ -202,6 +218,7 @@ describe('submitPaymentTransaction duplicate submission (#48)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     service = new PaymentService(mockPrisma as any);
+    mockPrisma.webhook.findMany.mockResolvedValue([]);
   });
 
   it('replays an already-stored transaction instead of submitting again', async () => {

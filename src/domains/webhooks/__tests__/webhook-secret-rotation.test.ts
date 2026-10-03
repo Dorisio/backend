@@ -21,6 +21,17 @@ describe('Webhook Secret Rotation', () => {
   const userId = 'user-789';
   const currentSecret = 'current-secret-32-bytes-long!!!';
   const ipAddress = '127.0.0.1';
+  const makeWebhookResponse = (overrides: Record<string, unknown> = {}) => ({
+    id: webhookId,
+    creatorId,
+    url: 'https://example.com/webhook',
+    events: ['tip.created'],
+    secret: currentSecret,
+    active: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -49,15 +60,15 @@ describe('Webhook Secret Rotation', () => {
       };
 
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
-      vi.mocked(mockPrisma.webhook.update).mockResolvedValue(rotatedWebhook as any);
+      vi.mocked(mockPrisma.webhook.update).mockImplementation((args) => {
+        return Promise.resolve({
+          ...rotatedWebhook,
+          secret: args.data.secret,
+        } as any);
+      });
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 
-      const result = await service.rotateWebhookSecret(
-        webhookId,
-        creatorId,
-        userId,
-        ipAddress
-      );
+      const result = await service.rotateWebhookSecret(webhookId, creatorId, userId, ipAddress);
 
       expect(result.id).toBe(webhookId);
       expect(result.secret).not.toBe(currentSecret); // New secret generated
@@ -113,11 +124,12 @@ describe('Webhook Secret Rotation', () => {
       };
 
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
-      vi.mocked(mockPrisma.webhook.update).mockResolvedValue({
-        ...webhook,
-        previousSecret: currentSecret,
-        secretRotatedAt: new Date(),
-      } as any);
+      vi.mocked(mockPrisma.webhook.update).mockResolvedValue(
+        makeWebhookResponse({
+          previousSecret: currentSecret,
+          secretRotatedAt: new Date(),
+        }) as any
+      );
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 
       await service.rotateWebhookSecret(webhookId, creatorId, userId, ipAddress);
@@ -138,10 +150,11 @@ describe('Webhook Secret Rotation', () => {
       const beforeRotation = new Date();
 
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
-      vi.mocked(mockPrisma.webhook.update).mockResolvedValue({
-        ...webhook,
-        secretRotatedAt: new Date(),
-      } as any);
+      vi.mocked(mockPrisma.webhook.update).mockResolvedValue(
+        makeWebhookResponse({
+          secretRotatedAt: new Date(),
+        }) as any
+      );
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 
       await service.rotateWebhookSecret(webhookId, creatorId, userId, ipAddress);
@@ -161,10 +174,11 @@ describe('Webhook Secret Rotation', () => {
 
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
       vi.mocked(mockPrisma.webhook.update).mockImplementation((args) => {
-        return Promise.resolve({
-          ...webhook,
-          secret: args.data.secret,
-        } as any);
+        return Promise.resolve(
+          makeWebhookResponse({
+            secret: args.data.secret,
+          }) as any
+        );
       });
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 
@@ -242,25 +256,21 @@ describe('Webhook Secret Rotation', () => {
       const rotationDate = new Date();
 
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
-      vi.mocked(mockPrisma.webhook.update).mockResolvedValue({
-        ...webhook,
-        secret: newSecret,
-        previousSecret: currentSecret,
-        secretRotatedAt: rotationDate,
-      } as any);
+      vi.mocked(mockPrisma.webhook.update).mockResolvedValue(
+        makeWebhookResponse({
+          secret: newSecret,
+          previousSecret: currentSecret,
+          secretRotatedAt: rotationDate,
+        }) as any
+      );
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 
-      const result = await service.rotateWebhookSecret(
-        webhookId,
-        creatorId,
-        userId,
-        ipAddress
-      );
+      const result = await service.rotateWebhookSecret(webhookId, creatorId, userId, ipAddress);
 
       // After rotation, webhook should have both secrets
       // This would be verified by the verification module which checks both
       expect(result.secret).toBe(newSecret);
-      
+
       const updateCall = vi.mocked(mockPrisma.webhook.update).mock.calls[0][0];
       expect(updateCall.data.previousSecret).toBe(currentSecret);
     });
@@ -277,10 +287,12 @@ describe('Webhook Secret Rotation', () => {
       vi.mocked(mockPrisma.webhook.findUnique).mockResolvedValue(webhook as any);
       vi.mocked(mockPrisma.webhook.update).mockImplementation((args) => {
         secrets.push(args.data.secret as string);
-        return Promise.resolve({
-          ...webhook,
-          secret: args.data.secret,
-        } as any);
+
+        return Promise.resolve(
+          makeWebhookResponse({
+            secret: args.data.secret,
+          }) as any
+        );
       });
       vi.mocked(mockPrisma.auditLog.create).mockResolvedValue({} as any);
 

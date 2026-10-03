@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Tip } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import {
   CreateTipRequest,
@@ -8,28 +8,27 @@ import {
   BuildTransactionResponse,
   SubmitTransactionResponse,
 } from './payment.types';
-import { ValidationError, NotFoundError, UnauthorizedError, ConflictError } from '../../utils/errors';
 import {
-  buildPaymentTransaction,
-  submitSignedTransaction,
-} from '../../lib/stellar/transactions';
+  ValidationError,
+  NotFoundError,
+  UnauthorizedError,
+  ConflictError,
+} from '../../utils/errors';
+import { buildPaymentTransaction, submitSignedTransaction } from '../../lib/stellar/transactions';
 import { logger } from '../../utils/logger';
-import {
-  sanitizePageSize,
-  sanitizePageNumber,
-  parseSortParameters,
-} from '../../utils/pagination';
+import { sanitizePageSize, sanitizePageNumber, parseSortParameters } from '../../utils/pagination';
 import { paginateWithCursor } from '../../db/pagination';
+import { WebhookService } from '../webhooks/webhook.service';
 import { buildTipMemo, validateMemo, validatePaymentAmount } from '../../lib/stellar/validation';
 import { config } from '../../config/env';
 import { MAX_MEDIA_PER_TIP, type MediaView } from '../media/media.types';
 import { buildCdnUrl } from '../media/media.storage';
 import { TIP_VISIBLE_STATE } from '../moderation/moderation.types';
 import { TipFilterInput, buildTipWhere, describeTipFilters } from './tip-filters';
-import { getRequestId, withRequestIdPayload } from '../../lib/requestContext';
 import { invalidateCaches, tipCacheKeys } from '../../lib/cache/invalidation';
-
 /**
+
+ * Columns required to build a TipResponse.
  * Media columns selected alongside a tip. Only `ready` media is exposed: rows
  * still scanning, rejected, or failed are invisible to tip readers.
  */
@@ -66,43 +65,34 @@ const TIP_RESPONSE_SELECT = {
   transactionHash: true,
   createdAt: true,
   updatedAt: true,
-media: {
+  media: {
     where: { status: 'ready' },
     orderBy: { attachedAt: 'asc' },
     select: TIP_MEDIA_SELECT,
   },
+
   assetCode: true,
   assetIssuer: true,
   assetDecimals: true,
   // Needed so a tip removed by a moderation decision 404s on direct lookup (#62).
   moderationState: true,
 } as const;
+function isUniqueConstraintError(error: unknown): boolean {
+  const code = (error as { code?: string })?.code;
+  return code === 'P2002';
+}
 
 /**
  * Content moderation read-side (#62): a tip that is hidden while a report is
  * open, or removed by a resolved decision, is not part of any public tip list.
- * `ModerationService` owns the state; this is what it means for readers.
  */
 const VISIBLE_TIPS_ONLY = { moderationState: TIP_VISIBLE_STATE } as const;
 
-/**
- * Raised internally when the version-guarded update loses a race. The retry loop
- * in `updateTipStatus` catches it; callers get a 409 with a retry hint instead.
- */
 class OptimisticLockError extends Error {
-  constructor(tipId: string) {
-    super(`Tip ${tipId} was modified concurrently`);
+  constructor(public readonly tipId: string) {
+    super(`Optimistic lock conflict for tip ${tipId}`);
     this.name = 'OptimisticLockError';
   }
-}
-
-/** Prisma reports unique-constraint violations (e.g. transactionHash) as P2002. */
-function isUniqueConstraintError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: string }).code === 'P2002'
-  );
 }
 
 export class PaymentService extends BaseService {
@@ -146,7 +136,10 @@ export class PaymentService extends BaseService {
 
       const requestedAsset = data.assetId
         ? await this.prisma.stellarAsset.findFirst({ where: { id: data.assetId, enabled: true } })
-        : await this.prisma.stellarAsset.findFirst({ where: { enabled: true, code: 'USDC' }, orderBy: { priority: 'desc' } });
+        : await this.prisma.stellarAsset.findFirst({
+            where: { enabled: true, code: 'USDC' },
+            orderBy: { priority: 'desc' },
+          });
       if (data.assetId && !requestedAsset) throw new ValidationError('Asset is unavailable');
 
       // Verify sender is not tipping themselves
@@ -277,14 +270,24 @@ export class PaymentService extends BaseService {
       }
 
       logger.info(`Tip created: ${tip.id} from ${userId} to ${data.creatorId} for ${data.amount}`);
-if (attachableMedia.length) {
+      await new WebhookService(this.prisma).dispatchEvent(tip.creatorId, tip.id, 'tip.created', {
+        tipId: tip.id,
+        amount: tip.amount,
+        message: tip.message,
+        status: tip.status,
+      });
+
+      if (attachableMedia.length) {
         // Stamp `attachedAt` so the media is ordered and the prune sweep can tell
         // an attached upload from an abandoned one. Best-effort: the tip exists
         // and is authoritative even if this bookkeeping write fails.
-        await this.stampMediaAttached(tip.id, attachableMedia.map((media) => media.id));
+        await this.stampMediaAttached(
+          tip.id,
+          attachableMedia.map((media) => media.id)
+        );
         logger.info(`Tip ${tip.id} attached ${attachableMedia.length} media item(s)`);
       }
-      await invalidateCaches(tipCacheKeys(tip.id, data.creatorId), 'tip.created');
+
       return this.formatTipResponse(tip);
     });
   }
@@ -387,8 +390,8 @@ if (attachableMedia.length) {
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, 20);
 
-// Database-side filtering (#56): status, date range, amount range,
-      // text search, sender and creator are all pushed into the query.
+      // Database-side filtering: public lists exclude tips hidden or removed
+      // by moderation while retaining the existing tip filters.
       const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, options);
 
       const sortFields = parseSortParameters(
@@ -450,9 +453,9 @@ if (attachableMedia.length) {
         throw new NotFoundError('Creator');
       }
 
-const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, params);
+      const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, params);
 
-      const result = await paginateWithCursor(
+      const result = await paginateWithCursor<Tip>(
         this.prisma.tip,
         {
           limit: params.limit,
@@ -504,7 +507,7 @@ const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, params);
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, 20);
 
-const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, options);
+      const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, options);
 
       const sortFields = parseSortParameters(
         options.sortBy,
@@ -557,9 +560,9 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, option
     } = {}
   ) {
     return this.executeWithLogging('payment.getUserTipHistoryCursor', async () => {
-const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params);
+      const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params);
 
-      const result = await paginateWithCursor(
+      const result = await paginateWithCursor<Tip>(
         this.prisma.tip,
         {
           limit: params.limit,
@@ -876,7 +879,9 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
                   pendingBalance: { increment: tip.amount },
                 },
               });
-              logger.info(`Tip completed and creator earnings updated: ${tipId}, amount: ${tip.amount}`);
+              logger.info(
+                `Tip completed and creator earnings updated: ${tipId}, amount: ${tip.amount}`
+              );
               shouldDispatchWebhook = true;
             } else {
               shouldDispatchWebhook = false; // Reset in case of retry
@@ -914,29 +919,24 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
         throw new ConflictError('Tip update did not complete', { tipId });
       }
 
-      // Dispatch webhooks outside transaction
+      // Invalidate caches after the successful transaction.
       await invalidateCaches(tipCacheKeys(tipId, finalTip.creatorId), 'tip.completed');
+
+      // Dispatch the webhook outside the transaction only after a successful completion.
       if (shouldDispatchWebhook) {
         try {
-          // Dynamic import to avoid circular dependencies if any
-          const { webhookDispatchQueue } = await import('../../lib/queue');
-          
-          const webhooks = await this.prisma.webhook.findMany({
-            where: { creatorId: finalTip.creatorId, active: true },
-          });
-          
-          for (const webhook of webhooks) {
-            if (webhook.events.includes('tip.completed') || webhook.events.includes('tip.confirmed')) {
-              await webhookDispatchQueue.add('webhook-dispatch', {
-                webhookId: webhook.id,
-                eventType: 'tip.completed',
-                requestId: getRequestId(),
-                payload: withRequestIdPayload({ tip: finalTip }),
-              });
+          await new WebhookService(this.prisma).dispatchEvent(
+            finalTip.creatorId,
+            finalTip.id,
+            'payment.completed',
+            {
+              tipId: finalTip.id,
+              amount: finalTip.amount,
+              transactionHash: finalTip.transactionHash,
             }
-          }
-        } catch (e) {
-          logger.error(`Failed to dispatch webhooks for tip ${tipId}:`, e);
+          );
+        } catch (error) {
+          logger.error({ error, tipId }, 'Failed to dispatch payment.completed webhook');
         }
       }
 
@@ -1002,13 +1002,13 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
           memo,
         });
 
-        const transaction = transactionBuilder.build();
-        const transactionEnvelope = transaction.toEnvelope().toXDR();
+        const transaction = transactionBuilder;
+        const transactionEnvelope = transaction.toXDR();
 
         logger.debug(`Payment transaction built for tip: ${tipId}`);
 
         return {
-          transactionEnvelope: transactionEnvelope as any as string,
+          transactionEnvelope: transactionEnvelope,
           tipId,
           fee: 100, // Base fee in stroops
         };
@@ -1159,7 +1159,17 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
   /**
    * Format database tip record to response DTO
    */
-  private formatTipResponse(tip: any): TipResponse {
+  private formatTipResponse(tip: {
+    id: string;
+    fromUserId: string;
+    creatorId: string;
+    amount: number;
+    message: string | null;
+    status: string;
+    transactionHash?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): TipResponse {
     return {
       id: tip.id,
       fromUserId: tip.fromUserId,
@@ -1168,7 +1178,9 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
       message: tip.message,
       status: tip.status as TipResponse['status'],
       transactionHash: tip.transactionHash || null,
-      media: Array.isArray(tip.media) ? tip.media.map((row: any) => this.formatAttachedMedia(row)) : [],
+      media: Array.isArray(tip.media)
+        ? tip.media.map((row: any) => this.formatAttachedMedia(row))
+        : [],
       createdAt: tip.createdAt.toISOString(),
       updatedAt: tip.updatedAt.toISOString(),
       assetCode: tip.assetCode ?? 'USDC',
@@ -1186,7 +1198,10 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
     const derivativeUrl = (variant: string): string | null => {
       const derivative = derivatives.find((entry: any) => entry?.variant === variant);
       if (!derivative?.key) return null;
-      return buildCdnUrl(config.MEDIA_CDN_BASE_URL, derivative.key) ?? `/api/v1/media/${media.id}/content?variant=${variant}`;
+      return (
+        buildCdnUrl(config.MEDIA_CDN_BASE_URL, derivative.key) ??
+        `/api/v1/media/${media.id}/content?variant=${variant}`
+      );
     };
 
     return {
@@ -1199,14 +1214,19 @@ const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params
       width: media.width ?? null,
       height: media.height ?? null,
       durationSeconds: media.durationSeconds ?? null,
-      url: buildCdnUrl(config.MEDIA_CDN_BASE_URL, media.storageKey) ?? `/api/v1/media/${media.id}/content`,
+      url:
+        buildCdnUrl(config.MEDIA_CDN_BASE_URL, media.storageKey) ??
+        `/api/v1/media/${media.id}/content`,
       previewUrl: derivativeUrl('preview'),
       thumbnailUrl: derivativeUrl('thumbnail'),
       processing: {
         status: media.processingStatus ?? 'pending',
         error: media.processingError ?? null,
       },
-      createdAt: (media.createdAt instanceof Date ? media.createdAt : new Date(media.createdAt)).toISOString(),
+      createdAt: (media.createdAt instanceof Date
+        ? media.createdAt
+        : new Date(media.createdAt)
+      ).toISOString(),
       attachedTipId: media.tipId ?? null,
     };
   }

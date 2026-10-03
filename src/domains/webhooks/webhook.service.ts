@@ -5,12 +5,9 @@ import { webhookDispatchQueue } from '../../lib/queue';
 import { logger } from '../../utils/logger';
 import { getRequestId, withRequestIdPayload } from '../../lib/requestContext';
 import crypto from 'crypto';
+import { isWebhookEventType, WebhookEventEnvelope, WebhookEventType } from './webhook.events';
 import { AuditService } from '../../services/audit.service';
-import {
-  DEFAULT_PAGE_SIZE,
-  sanitizePageNumber,
-  sanitizePageSize,
-} from '../../utils/pagination';
+import { DEFAULT_PAGE_SIZE, sanitizePageNumber, sanitizePageSize } from '../../utils/pagination';
 
 /** Columns required to build a `WebhookResponse`. */
 const WEBHOOK_RESPONSE_SELECT = {
@@ -43,7 +40,7 @@ const MAX_DISPATCH_TARGETS = 50;
 
 export interface CreateWebhookRequest {
   url: string;
-  events: string[];
+  events: WebhookEventType[];
 }
 
 export interface WebhookResponse {
@@ -78,9 +75,8 @@ export class WebhookService extends BaseService {
       }
 
       // Validate events
-      const validEvents = ['tip.created', 'tip.confirmed', 'tip.failed', 'payout.completed'];
       for (const event of data.events) {
-        if (!validEvents.includes(event)) {
+        if (!isWebhookEventType(event)) {
           throw new ValidationError(`Invalid event type: ${event}`);
         }
       }
@@ -184,15 +180,31 @@ export class WebhookService extends BaseService {
   async dispatchEvent(
     creatorId: string,
     transactionId: string,
-    eventType: string,
-    payload: Record<string, unknown>
+    eventType: WebhookEventType,
+    payload: Record<string, unknown>,
+    webhookId?: string
   ): Promise<void> {
     return this.executeWithLogging('webhook.dispatch', async () => {
+      if (!isWebhookEventType(eventType)) {
+        throw new ValidationError(`Invalid event type: ${eventType}`);
+      }
+
+      const eventId = crypto.randomUUID();
+
+      const event: WebhookEventEnvelope = {
+        id: eventId,
+        type: eventType,
+        version: '1',
+        createdAt: new Date().toISOString(),
+        data: { ...payload, transactionId },
+      };
+
       // Find active webhooks for this creator that subscribe to this event.
-      // Only the columns the queue job needs are selected.
+      // Filtering happens before work is placed on the delivery queue.
       const webhooks = await this.prisma.webhook.findMany({
         where: {
           creatorId,
+          ...(webhookId ? { id: webhookId } : {}),
           active: true,
           events: {
             has: eventType,
@@ -204,30 +216,63 @@ export class WebhookService extends BaseService {
       });
 
       // Queue dispatch jobs for each webhook
-      await Promise.all(
-        webhooks.map((webhook) =>
-          webhookDispatchQueue.add(
+      // Create a durable delivery record before queueing each webhook.
+      for (const webhook of webhooks) {
+        const delivery = await this.prisma.webhookEvent.create({
+          data: {
+            webhookId: webhook.id,
+            eventType,
+            payload: JSON.stringify(event),
+            status: 'pending',
+          },
+        });
+
+        try {
+          await webhookDispatchQueue.add(
             'dispatch-event',
             {
               webhookId: webhook.id,
-              transactionId,
+              eventId: delivery.id,
               eventType,
               requestId: getRequestId(),
-              payload: withRequestIdPayload(payload),
+              payload: withRequestIdPayload(event),
             },
             {
               attempts: 5,
               backoff: { type: 'exponential', delay: 2000 },
+              jobId: delivery.id,
             }
-          )
-        )
-      );
+          );
+        } catch (error) {
+          // Keep the durable pending record available for recovery if enqueueing fails.
+          await this.prisma.webhookEvent.update({
+            where: { id: delivery.id },
+            data: {
+              lastError: error instanceof Error ? error.message : String(error),
+            },
+          });
 
-      logger.info(
-        { creatorId, eventType, queued: webhooks.length },
-        'Queued webhook dispatches'
-      );
+          throw error;
+        }
+      }
+
+      logger.info({ creatorId, eventType, queued: webhooks.length }, 'Queued webhook dispatches');
     });
+  }
+
+  async testWebhook(webhookId: string, creatorId: string): Promise<void> {
+    const webhook = await this.prisma.webhook.findUnique({ where: { id: webhookId } });
+    if (!webhook || webhook.creatorId !== creatorId) throw new NotFoundError('Webhook');
+    if (!webhook.active) throw new ValidationError('Webhook is inactive');
+    const eventType = webhook.events.find(isWebhookEventType);
+    if (!eventType) throw new ValidationError('Webhook has no supported subscriptions');
+    await this.dispatchEvent(
+      creatorId,
+      `test-${crypto.randomUUID()}`,
+      eventType,
+      { test: true },
+      webhook.id
+    );
   }
 
   /**
@@ -273,7 +318,7 @@ export class WebhookService extends BaseService {
       const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
       const skip = (safePage - 1) * safePageSize;
 
-      const where: any = { webhookId };
+      const where: { webhookId: string; status?: string } = { webhookId };
       if (status) {
         where.status = status;
       }
@@ -313,12 +358,6 @@ export class WebhookService extends BaseService {
     });
   }
 
-  /**
-   * Rotate webhook secret
-   * 
-   * Generates a new secret while keeping the previous one valid for a grace period.
-   * During the grace period, both secrets will be accepted for signature verification.
-   */
   async rotateWebhookSecret(
     webhookId: string,
     creatorId: string,
@@ -368,10 +407,7 @@ export class WebhookService extends BaseService {
         },
       });
 
-      logger.info(
-        { webhookId, creatorId, userId },
-        'Webhook secret rotated successfully'
-      );
+      logger.info({ webhookId, creatorId, userId }, 'Webhook secret rotated successfully');
 
       return this.formatWebhookResponse(updated);
     });
@@ -379,7 +415,7 @@ export class WebhookService extends BaseService {
 
   /**
    * Clear previous secret after rotation grace period
-   * 
+   *
    * This should be called after the grace period (e.g., 7 days) to remove the old secret.
    * Can be run manually or as a scheduled job.
    */
@@ -403,16 +439,18 @@ export class WebhookService extends BaseService {
         },
       });
 
-      logger.info(
-        { count: result.count },
-        'Cleared expired previous secrets'
-      );
+      logger.info({ count: result.count }, 'Cleared expired previous secrets');
 
       return result.count;
     });
   }
 
-  private formatWebhookResponse(webhook: any): WebhookResponse {
+  private formatWebhookResponse(
+    webhook: Omit<WebhookResponse, 'createdAt' | 'updatedAt'> & {
+      createdAt: Date;
+      updatedAt: Date;
+    }
+  ): WebhookResponse {
     return {
       id: webhook.id,
       creatorId: webhook.creatorId,
