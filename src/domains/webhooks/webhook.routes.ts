@@ -1,3 +1,4 @@
+import type {} from '@fastify/swagger';
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { WebhookService, CreateWebhookRequest } from './webhook.service';
@@ -8,13 +9,34 @@ import { ValidationError, AppError } from '../../utils/errors';
 export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const webhookService = new WebhookService(prisma);
 
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/webhooks/:id/test',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+        const creator = await prisma.creator.findUnique({ where: { userId: user.userId } });
+        if (!creator) {
+          reply.code(404).send(formatError('Creator not found', 'CREATOR_NOT_FOUND'));
+          return;
+        }
+        await webhookService.testWebhook(request.params.id, creator.id);
+        reply.code(202).send(formatSuccess({ message: 'Test event queued' }));
+      } catch (error) {
+        if (error instanceof AppError) reply.code(error.statusCode).send(formatError(error.message, error.code));
+        else throw error;
+      }
+    }
+  );
+
   // POST /api/v1/webhooks - Register a webhook
   app.post<{ Body: CreateWebhookRequest }>(
     '/api/v1/webhooks',
     {
       preHandler: authMiddleware,
       schema: {
-        description: 'Register a webhook to receive events when tips are created and confirmed.',
+        description: 'Register a webhook to receive events for tips, creator verification, and completed payments.',
         body: {
           type: 'object',
           required: ['url', 'events'],
@@ -24,16 +46,16 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
               type: 'array',
               items: { type: 'string' },
               description:
-                'Events to subscribe to (tip.created, tip.confirmed, tip.failed, payout.completed)',
+                'Events to subscribe to (tip.created, creator.verified, payment.completed)',
             },
           },
         },
         response: {
-          201: { description: 'Webhook registered' },
-          400: { description: 'Validation error' },
-          401: { description: 'Unauthorized' },
+          201: { type: 'object', additionalProperties: true, description: 'Webhook registered' },
+          400: { type: 'object', additionalProperties: true, description: 'Validation error' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
         },
-      } as any,
+      },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -84,10 +106,10 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
           },
         },
         response: {
-          200: { description: 'List of webhooks' },
-          401: { description: 'Unauthorized' },
+          200: { type: 'object', additionalProperties: true, description: 'List of webhooks' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
         },
-      } as any,
+      },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -199,11 +221,11 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
           },
         },
         response: {
-          200: { description: 'Webhook deleted' },
-          401: { description: 'Unauthorized' },
-          404: { description: 'Webhook not found' },
+          200: { type: 'object', additionalProperties: true, description: 'Webhook deleted' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
+          404: { type: 'object', additionalProperties: true, description: 'Webhook not found' },
         },
-      } as any,
+      },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
@@ -261,11 +283,11 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
           },
         },
         response: {
-          200: { description: 'Delivery history with pagination' },
-          401: { description: 'Unauthorized' },
-          404: { description: 'Webhook not found' },
+          200: { type: 'object', additionalProperties: true, description: 'Delivery history with pagination' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
+          404: { type: 'object', additionalProperties: true, description: 'Webhook not found' },
         },
-      } as any,
+      },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {

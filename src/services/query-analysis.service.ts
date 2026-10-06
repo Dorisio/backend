@@ -1,6 +1,10 @@
 import { Pool } from 'pg';
 import { logger } from '../utils/logger';
-import { explainQueryWithOptions, analyzeQueryPlan, type QueryPlanResult } from '../db/query-optimizer';
+import {
+  explainQueryWithOptions,
+  analyzeQueryPlan,
+  type QueryPlanResult,
+} from '../db/query-optimizer';
 
 /**
  * Slow query threshold in milliseconds
@@ -62,7 +66,7 @@ export interface MissingIndexSuggestion {
 
 /**
  * Query Analysis Service
- * 
+ *
  * Provides comprehensive query performance analysis including:
  * - pg_stat_statements integration
  * - Slow query detection (>100ms)
@@ -124,8 +128,9 @@ export class QueryAnalysisService {
         min_exec_time: string;
         stddev_exec_time: string;
         rows: string;
-      }>(`
-        SELECT 
+      }>(
+        `
+        SELECT
           query,
           calls,
           total_exec_time,
@@ -138,9 +143,11 @@ export class QueryAnalysisService {
         WHERE mean_exec_time > $1
         ORDER BY mean_exec_time DESC
         LIMIT $2
-      `, [SLOW_QUERY_THRESHOLD_MS, limit]);
+      `,
+        [SLOW_QUERY_THRESHOLD_MS, limit]
+      );
 
-      return result.rows.map(row => ({
+      return result.rows.map((row) => ({
         query: row.query,
         calls: parseInt(row.calls, 10),
         totalTimeMs: parseFloat(row.total_exec_time),
@@ -173,8 +180,9 @@ export class QueryAnalysisService {
         max_exec_time: string;
         min_exec_time: string;
         rows: string;
-      }>(`
-        SELECT 
+      }>(
+        `
+        SELECT
           query,
           calls,
           total_exec_time,
@@ -185,9 +193,11 @@ export class QueryAnalysisService {
         FROM pg_stat_statements
         ORDER BY total_exec_time DESC
         LIMIT $1
-      `, [limit]);
+      `,
+        [limit]
+      );
 
-      return result.rows.map(row => ({
+      return result.rows.map((row) => ({
         query: row.query,
         calls: parseInt(row.calls, 10),
         totalTimeMs: parseFloat(row.total_exec_time),
@@ -218,8 +228,9 @@ export class QueryAnalysisService {
         max_exec_time: string;
         min_exec_time: string;
         rows: string;
-      }>(`
-        SELECT 
+      }>(
+        `
+        SELECT
           query,
           calls,
           total_exec_time,
@@ -230,9 +241,11 @@ export class QueryAnalysisService {
         FROM pg_stat_statements
         ORDER BY calls DESC
         LIMIT $1
-      `, [limit]);
+      `,
+        [limit]
+      );
 
-      return result.rows.map(row => ({
+      return result.rows.map((row) => ({
         query: row.query,
         calls: parseInt(row.calls, 10),
         totalTimeMs: parseFloat(row.total_exec_time),
@@ -261,7 +274,7 @@ export class QueryAnalysisService {
         idx_scan: string;
         n_live_tup: string;
       }>(`
-        SELECT 
+        SELECT
           schemaname,
           tablename,
           seq_scan,
@@ -303,7 +316,10 @@ export class QueryAnalysisService {
   /**
    * Analyze a specific query and provide recommendations
    */
-  async analyzeQuery(query: string, params: unknown[] = []): Promise<{
+  async analyzeQuery(
+    query: string,
+    params: unknown[] = []
+  ): Promise<{
     plan: QueryPlanResult;
     recommendations: OptimizationRecommendation[];
   }> {
@@ -340,13 +356,14 @@ export class QueryAnalysisService {
       recommendations.push({
         type: 'analyze_needed',
         severity: 'medium',
-        suggestion: 'Row estimate mismatch detected. Run ANALYZE on affected tables to update statistics.',
+        suggestion:
+          'Row estimate mismatch detected. Run ANALYZE on affected tables to update statistics.',
         estimatedImpact: 'Medium - helps planner choose better execution plans',
       });
     }
 
     if (plan.sortNodes.length > 0) {
-      const largeSort = plan.sortNodes.find(node => (node['Plan Rows'] as number) > 10000);
+      const largeSort = plan.sortNodes.find((node) => (node['Plan Rows'] as number) > 10000);
       if (largeSort) {
         recommendations.push({
           type: 'missing_index',
@@ -444,7 +461,7 @@ export class QueryAnalysisService {
         total_time: string;
         unique_queries: string;
       }>(`
-        SELECT 
+        SELECT
           SUM(calls)::bigint AS total_calls,
           SUM(total_exec_time)::numeric AS total_time,
           COUNT(*)::int AS unique_queries

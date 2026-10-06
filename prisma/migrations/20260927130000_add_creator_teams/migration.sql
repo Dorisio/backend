@@ -241,4 +241,3 @@ ALTER TABLE "TeamPayout" ADD CONSTRAINT "TeamPayout_requestedById_fkey" FOREIGN 
 
 -- AddForeignKey
 ALTER TABLE "TeamAuditLog" ADD CONSTRAINT "TeamAuditLog_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "CreatorTeam"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-

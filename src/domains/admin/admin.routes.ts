@@ -15,13 +15,17 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     { preHandler: requireAdmin },
     async (request, reply) => {
       try {
-        const result = await adminService.bulkVerifyCreators(request.user?.userId ?? '', request.body.creatorIds);
+        const result = await adminService.bulkVerifyCreators(
+          request.user?.userId ?? '',
+          request.body.creatorIds
+        );
         return reply.code(202).send(formatSuccess(result));
       } catch (error) {
-        if (error instanceof AppError) return reply.code(error.statusCode).send(formatError(error.message, error.code));
+        if (error instanceof AppError)
+          return reply.code(error.statusCode).send(formatError(error.message, error.code));
         throw error;
       }
-    },
+    }
   );
 
   // POST /api/v1/admin/wallets/:address/flag - Flag wallet
@@ -30,10 +34,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         params: {
           type: 'object',
           properties: {
@@ -83,10 +83,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         params: {
           type: 'object',
           properties: {
@@ -126,10 +122,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         params: {
           type: 'object',
           properties: {
@@ -179,10 +171,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         params: {
           type: 'object',
           properties: {
@@ -222,10 +210,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         response: {
           200: { type: 'null', description: 'Moderation queue' },
           401: { type: 'null', description: 'Unauthorized' },
@@ -240,7 +224,11 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
 
         const query = request.query as { page?: string; pageSize?: string; limit?: string };
         const page = query?.page ? parseInt(query.page) : 1;
-        const pageSize = query?.pageSize ? parseInt(query.pageSize) : query?.limit ? parseInt(query.limit) : 20;
+        const pageSize = query?.pageSize
+          ? parseInt(query.pageSize)
+          : query?.limit
+            ? parseInt(query.limit)
+            : 20;
 
         const result = await adminService.getModerationQueue(page, pageSize);
         reply.send(formatSuccess(result));
@@ -262,10 +250,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         response: {
           200: { type: 'null', description: 'Cache statistics' },
           401: { type: 'null', description: 'Unauthorized' },
@@ -298,10 +282,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         response: {
           200: { type: 'null', description: 'Cache cleared' },
           401: { type: 'null', description: 'Unauthorized' },
@@ -334,10 +314,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         body: {
           type: 'object',
           required: ['key'],
@@ -378,14 +354,14 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         body: {
           type: 'object',
           properties: {
-            type: { type: 'string', enum: ['creators', 'trending', 'analytics', 'all'], description: 'Type of cache warming' },
+            type: {
+              type: 'string',
+              enum: ['creators', 'trending', 'analytics', 'all'],
+              description: 'Type of cache warming',
+            },
           },
         },
         response: {
@@ -438,10 +414,6 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     {
       preHandler: requireAdmin,
       schema: {
-        
-        
-
-        
         response: {
           200: { type: 'null', description: 'Cache statistics reset' },
           401: { type: 'null', description: 'Unauthorized' },

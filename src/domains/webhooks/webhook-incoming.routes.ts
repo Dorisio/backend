@@ -34,145 +34,151 @@ export const registerIncomingWebhookRoutes = (app: FastifyInstance, prisma: Pris
 
     /**
      * POST /api/v1/webhooks/incoming/:webhookId
-     * 
+     *
      * Receive and verify incoming webhooks from creators.
-     * 
+     *
      * Required headers:
      * - X-Webhook-Signature: HMAC-SHA256 signature
      * - X-Webhook-Timestamp: Unix timestamp (seconds)
      * - X-Webhook-Nonce: Unique request identifier
-     * 
+     *
      * The signature is computed as: HMAC-SHA256(secret, "{timestamp}.{nonce}.{body}")
      */
     scope.post<{
-    Params: { webhookId: string };
-    Body: Record<string, unknown>;
-  }>(
-    '/api/v1/webhooks/incoming/:webhookId',
-    {
-      schema: {
-        description: 'Receive incoming webhook from a creator with signature verification',
-        params: {
-          type: 'object',
-          required: ['webhookId'],
-          properties: {
-            webhookId: { type: 'string', description: 'Webhook ID' },
-          },
-        },
-        headers: {
-          type: 'object',
-          properties: {
-            'x-webhook-signature': {
-              type: 'string',
-              description: 'HMAC-SHA256 signature of the request',
-            },
-            'x-webhook-timestamp': {
-              type: 'string',
-              description: 'Unix timestamp in seconds',
-            },
-            'x-webhook-nonce': {
-              type: 'string',
-              description: 'Unique nonce to prevent replay attacks',
+      Params: { webhookId: string };
+      Body: Record<string, unknown>;
+    }>(
+      '/api/v1/webhooks/incoming/:webhookId',
+      {
+        schema: {
+          description: 'Receive incoming webhook from a creator with signature verification',
+          params: {
+            type: 'object',
+            required: ['webhookId'],
+            properties: {
+              webhookId: { type: 'string', description: 'Webhook ID' },
             },
           },
-        },
-        response: {
-          200: { description: 'Webhook received and verified' },
-          400: { description: 'Invalid request or signature verification failed' },
-          401: { description: 'Signature verification failed' },
-          404: { description: 'Webhook not found' },
-        },
-      } as any,
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const { webhookId } = request.params as { webhookId: string };
-
-      try {
-        // Get raw body for signature verification
-        const rawBody = (request as RawBodyRequest).rawBody || JSON.stringify(request.body);
-
-        // Parse webhook headers
-        const headers = parseWebhookHeaders(request.headers as Record<string, string | string[] | undefined>);
-
-        // Verify webhook signature
-        const verificationResult = await verifyCreatorWebhookSignature(
-          prisma,
-          webhookId,
-          rawBody,
-          headers,
-          undefined,
-          request.ip
-        );
-
-        if (!verificationResult.valid) {
-          logger.warn(
-            {
-              webhookId,
-              reason: verificationResult.reason,
-              timestamp: verificationResult.timestamp,
-              headers: {
-                hasSignature: !!headers.signature,
-                hasTimestamp: !!headers.timestamp,
-                hasNonce: !!headers.nonce,
+          headers: {
+            type: 'object',
+            properties: {
+              'x-webhook-signature': {
+                type: 'string',
+                description: 'HMAC-SHA256 signature of the request',
+              },
+              'x-webhook-timestamp': {
+                type: 'string',
+                description: 'Unix timestamp in seconds',
+              },
+              'x-webhook-nonce': {
+                type: 'string',
+                description: 'Unique nonce to prevent replay attacks',
               },
             },
-            'Incoming webhook verification failed'
-          );
-
-          reply.code(401).send(
-            formatError(
-              `Webhook verification failed: ${verificationResult.reason}`,
-              'WEBHOOK_VERIFICATION_FAILED'
-            )
-          );
-          return;
-        }
-
-        // Log successful verification
-        logger.info(
-          {
-            webhookId,
-            timestamp: verificationResult.timestamp,
-            usedPreviousSecret: verificationResult.usedPreviousSecret,
           },
-          'Incoming webhook verified successfully'
-        );
+          response: {
+            200: { description: 'Webhook received and verified' },
+            400: { description: 'Invalid request or signature verification failed' },
+            401: { description: 'Signature verification failed' },
+            404: { description: 'Webhook not found' },
+          },
+        } as any,
+      },
+      async (request: FastifyRequest, reply: FastifyReply) => {
+        const { webhookId } = request.params as { webhookId: string };
 
-        // Process the webhook payload
-        const body = request.body as Record<string, unknown>;
-        
-        // Here you would add your webhook processing logic
-        // For now, we just acknowledge receipt
-        await processIncomingWebhook(prisma, webhookId, body, verificationResult.timestamp!);
+        try {
+          // Get raw body for signature verification
+          const rawBody = (request as RawBodyRequest).rawBody || JSON.stringify(request.body);
 
-        reply.code(200).send(
-          formatSuccess({
-            received: true,
-            webhookId,
-            timestamp: verificationResult.timestamp,
-          })
-        );
-      } catch (error) {
-        logger.error(
-          { webhookId, error: error instanceof Error ? error.message : 'Unknown error' },
-          'Error processing incoming webhook'
-        );
-
-        if (error instanceof AppError) {
-          reply.code(error.statusCode).send(formatError(error.message, error.code));
-        } else {
-          reply.code(500).send(
-            formatError('Internal server error processing webhook', 'WEBHOOK_PROCESSING_ERROR')
+          // Parse webhook headers
+          const headers = parseWebhookHeaders(
+            request.headers as Record<string, string | string[] | undefined>
           );
+
+          // Verify webhook signature
+          const verificationResult = await verifyCreatorWebhookSignature(
+            prisma,
+            webhookId,
+            rawBody,
+            headers,
+            undefined,
+            request.ip
+          );
+
+          if (!verificationResult.valid) {
+            logger.warn(
+              {
+                webhookId,
+                reason: verificationResult.reason,
+                timestamp: verificationResult.timestamp,
+                headers: {
+                  hasSignature: !!headers.signature,
+                  hasTimestamp: !!headers.timestamp,
+                  hasNonce: !!headers.nonce,
+                },
+              },
+              'Incoming webhook verification failed'
+            );
+
+            reply
+              .code(401)
+              .send(
+                formatError(
+                  `Webhook verification failed: ${verificationResult.reason}`,
+                  'WEBHOOK_VERIFICATION_FAILED'
+                )
+              );
+            return;
+          }
+
+          // Log successful verification
+          logger.info(
+            {
+              webhookId,
+              timestamp: verificationResult.timestamp,
+              usedPreviousSecret: verificationResult.usedPreviousSecret,
+            },
+            'Incoming webhook verified successfully'
+          );
+
+          // Process the webhook payload
+          const body = request.body as Record<string, unknown>;
+
+          // Here you would add your webhook processing logic
+          // For now, we just acknowledge receipt
+          await processIncomingWebhook(prisma, webhookId, body, verificationResult.timestamp!);
+
+          reply.code(200).send(
+            formatSuccess({
+              received: true,
+              webhookId,
+              timestamp: verificationResult.timestamp,
+            })
+          );
+        } catch (error) {
+          logger.error(
+            { webhookId, error: error instanceof Error ? error.message : 'Unknown error' },
+            'Error processing incoming webhook'
+          );
+
+          if (error instanceof AppError) {
+            reply.code(error.statusCode).send(formatError(error.message, error.code));
+          } else {
+            reply
+              .code(500)
+              .send(
+                formatError('Internal server error processing webhook', 'WEBHOOK_PROCESSING_ERROR')
+              );
+          }
         }
       }
-    }
-  );
+    );
   }); // Close scope.register
 
   /**
    * GET /api/v1/webhooks/:webhookId/verification-info
-   * 
+   *
    * Get information about webhook verification requirements.
    * This helps creators understand how to sign their webhooks.
    */
@@ -221,11 +227,7 @@ export const registerIncomingWebhookRoutes = (app: FastifyInstance, prisma: Pris
             url: webhook.url,
             active: webhook.active,
             algorithm: 'HMAC-SHA256',
-            requiredHeaders: [
-              'X-Webhook-Signature',
-              'X-Webhook-Timestamp',
-              'X-Webhook-Nonce',
-            ],
+            requiredHeaders: ['X-Webhook-Signature', 'X-Webhook-Timestamp', 'X-Webhook-Nonce'],
             signatureFormat: 'HMAC-SHA256({timestamp}.{nonce}.{body})',
             timestampTolerance: 300, // 5 minutes
             secretLastRotated: webhook.secretRotatedAt?.toISOString(),

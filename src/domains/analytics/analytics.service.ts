@@ -24,7 +24,8 @@ export class AnalyticsService extends BaseService {
   > {
     return this.executeWithLogging('analytics.earningsOverTime', async () => {
       const cacheKey = `analytics:earnings:${creatorId}:${days}:${granularity}`;
-      const cached = queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
+      const cached =
+        queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
       if (cached) {
         return cached;
       }
@@ -110,7 +111,10 @@ export class AnalyticsService extends BaseService {
   > {
     return this.executeWithLogging('analytics.topSupporters', async () => {
       const cacheKey = `analytics:topSupporters:${creatorId}:${limit}`;
-      const cached = queryCache.get<{ userId: string; totalAmount: number; tipCount: number; lastTipDate: string }[]>(cacheKey);
+      const cached =
+        queryCache.get<
+          { userId: string; totalAmount: number; tipCount: number; lastTipDate: string }[]
+        >(cacheKey);
       if (cached) {
         return cached;
       }
@@ -236,9 +240,7 @@ export class AnalyticsService extends BaseService {
         }),
       ]);
 
-      const growthRate = previousTips > 0
-        ? ((recentTips - previousTips) / previousTips) * 100
-        : 0;
+      const growthRate = previousTips > 0 ? ((recentTips - previousTips) / previousTips) * 100 : 0;
 
       // Find peak day
       const tipsByDay = await this.prisma.tip.findMany({
@@ -349,4 +351,3 @@ export class AnalyticsService extends BaseService {
     queryCache.invalidateTags([`analytics:creator:${creatorId}`]);
   }
 }
-

@@ -11,7 +11,7 @@ describe('HttpClient', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    
+
     mockAxiosInstance = {
       get: vi.fn(),
       post: vi.fn(),
@@ -162,7 +162,7 @@ describe('HttpClient', () => {
     it('should retry on 500 error with exponential backoff', async () => {
       const client = new HttpClient({ maxRetries: 2, retryDelayMs: 100 });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(error)
         .mockRejectedValueOnce(error)
@@ -172,7 +172,7 @@ describe('HttpClient', () => {
 
       // First retry after 100ms (1 * 100 * 2^0)
       await vi.advanceTimersByTimeAsync(100);
-      
+
       // Second retry after 200ms (1 * 100 * 2^1)
       await vi.advanceTimersByTimeAsync(200);
 
@@ -184,7 +184,7 @@ describe('HttpClient', () => {
     it('should retry on network errors', async () => {
       const client = new HttpClient({ maxRetries: 1, retryDelayMs: 100 });
       const networkError = { code: 'ECONNRESET', message: 'Connection reset', config: {} };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(networkError)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
@@ -200,7 +200,7 @@ describe('HttpClient', () => {
     it('should not retry on 4xx errors (except 429 and 408)', async () => {
       const client = new HttpClient({ maxRetries: 3 });
       const error = { response: { status: 404 }, config: {}, message: 'Not found' };
-      
+
       mockAxiosInstance.get.mockRejectedValue(error);
 
       await expect(client.get('/test')).rejects.toThrow();
@@ -210,7 +210,7 @@ describe('HttpClient', () => {
     it('should respect skipRetry option', async () => {
       const client = new HttpClient({ maxRetries: 3 });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get.mockRejectedValue(error);
 
       await expect(client.get('/test', { skipRetry: true })).rejects.toThrow();
@@ -220,11 +220,11 @@ describe('HttpClient', () => {
     it('should throw HttpClientError after exhausting retries', async () => {
       const client = new HttpClient({ maxRetries: 2, retryDelayMs: 10 });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get.mockRejectedValue(error);
 
       const promise = client.get('/test');
-      
+
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(20);
 
@@ -248,13 +248,13 @@ describe('HttpClient', () => {
         config: {},
         message: 'Rate limited',
       };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(rateLimitError)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
 
       const promise = client.get('/test');
-      
+
       // Should wait 2 seconds (2000ms)
       await vi.advanceTimersByTimeAsync(2000);
 
@@ -273,7 +273,7 @@ describe('HttpClient', () => {
         config: {},
         message: 'Rate limited',
       };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(rateLimitError)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
@@ -292,7 +292,7 @@ describe('HttpClient', () => {
         config: {},
         message: 'Rate limited',
       };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(rateLimitError)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
@@ -316,18 +316,18 @@ describe('HttpClient', () => {
         circuitBreakerOptions: { failureThreshold: 2, resetTimeoutMs: 5000 },
       });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get.mockRejectedValue(error);
 
       // First failure
       await expect(client.get('/test')).rejects.toThrow();
-      
+
       // Second failure - should trip circuit breaker
       await expect(client.get('/test')).rejects.toThrow();
 
       // Third call should fail fast with circuit breaker error
       await expect(client.get('/test')).rejects.toThrow(HttpClientCircuitBreakerOpenError);
-      
+
       // Should only have called axios twice (third blocked by circuit breaker)
       expect(mockAxiosInstance.get).toHaveBeenCalledTimes(2);
     });
@@ -338,7 +338,7 @@ describe('HttpClient', () => {
         circuitBreakerOptions: { failureThreshold: 1, resetTimeoutMs: 1000 },
       });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(error)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
@@ -363,7 +363,7 @@ describe('HttpClient', () => {
         circuitBreakerOptions: { failureThreshold: 1 },
       });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get.mockRejectedValue(error);
 
       // Trip circuit breaker
@@ -373,7 +373,9 @@ describe('HttpClient', () => {
       await expect(client.get('/test')).rejects.toThrow(HttpClientCircuitBreakerOpenError);
 
       // Request with skipCircuitBreaker should bypass
-      await expect(client.get('/test', { skipCircuitBreaker: true })).rejects.toThrow(HttpClientError);
+      await expect(client.get('/test', { skipCircuitBreaker: true })).rejects.toThrow(
+        HttpClientError
+      );
       expect(mockAxiosInstance.get).toHaveBeenCalledTimes(2);
     });
 
@@ -392,7 +394,7 @@ describe('HttpClient', () => {
         circuitBreakerOptions: { failureThreshold: 1 },
       });
       const error = { response: { status: 500 }, config: {}, message: 'Server error' };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(error)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
@@ -416,16 +418,14 @@ describe('HttpClient', () => {
     it('should enforce request timeout', async () => {
       const client = new HttpClient({ timeout: 1000 });
 
-      expect(mockCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ timeout: 1000 })
-      );
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ timeout: 1000 }));
     });
 
     it('should retry on timeout errors', async () => {
       vi.useFakeTimers();
       const client = new HttpClient({ maxRetries: 1, retryDelayMs: 100 });
       const timeoutError = { code: 'ECONNABORTED', message: 'Timeout', config: {} };
-      
+
       mockAxiosInstance.get
         .mockRejectedValueOnce(timeoutError)
         .mockResolvedValueOnce({ data: { success: true }, status: 200, config: {} });
