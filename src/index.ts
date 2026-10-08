@@ -43,6 +43,7 @@ import { registerMediaRoutes } from './domains/media/media.routes';
 import { registerModerationRoutes } from './domains/moderation/moderation.routes';
 import { registerRoleRoutes } from './domains/roles/role.routes';
 import { registerNotificationRoutes } from './domains/notifications/notification.routes';
+import { registerReferralRoutes } from './domains/referrals/referral.routes';
 import { registerMetricsRoute } from './routes/metrics.routes';
 import { registerReportRoutes } from './domains/reports/report.routes';
 import { registerPrivacyRoutes } from './domains/privacy/privacy.routes';
@@ -295,9 +296,7 @@ const bootstrap = async (): Promise<void> => {
   registerIncomingWebhookRoutes(app, prisma);
   registerAnalyticsRoutes(app, prisma);
   registerAdminRoutes(app, prisma);
-registerRoleRoutes(app, prisma);
-registerMediaRoutes(app, prisma);
-registerModerationRoutes(app, prisma);
+  registerReferralRoutes(app, prisma);
   registerMetricsRoute(app, prisma);
   registerQueryPerformanceRoutes(app);
   registerJobRoutes(app);

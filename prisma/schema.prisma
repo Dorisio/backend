@@ -267,6 +267,8 @@ model Tip {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
+  referralCommission ReferralCommission?
+
   @@index([creatorId, status, createdAt])
   @@index([fromUserId, createdAt])
   @@index([status])
@@ -602,6 +604,125 @@ enum PayoutStatus {
   processing
   completed
   failed
+}
+
+// ─── Referral Program ────────────────────────────────────────────────────────
+
+// Commission tier configuration (admin-controlled).
+// Admins can define named tiers with different commission rates.
+// Each user is assigned a tier; default tier is applied if none specified.
+model ReferralTier {
+  id          String @id @default(cuid())
+  name        String @unique  // e.g. "standard", "silver", "gold"
+  description String?
+  // Commission as a fraction (e.g. 0.05 = 5%)
+  commissionRate Float
+  isDefault   Boolean @default(false)
+
+  referralCodes ReferralCode[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isDefault])
+}
+
+// A unique referral code owned by a user. Each user may have at most one
+// active code at a time. The code is a short, URL-safe alphanumeric string.
+model ReferralCode {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  code      String  @unique
+  tierId    String?
+  tier      ReferralTier? @relation(fields: [tierId], references: [id], onDelete: SetNull)
+
+  isActive  Boolean @default(true)
+  // Soft fraud-lock: admin or system can deactivate without deleting history
+  lockedAt  DateTime?
+  lockReason String?
+
+  usageCount Int @default(0)
+
+  referrals    Referral[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, isActive])
+  @@index([code])
+  // Dashboard: referrer looks up their own code list newest-first.
+  @@index([userId, createdAt(sort: Desc)], map: "idx_referralCode_user_createdAt")
+}
+
+// A single referral event: a new user who signed up via a referral code.
+// One referee -> one referral record.
+model Referral {
+  id             String       @id @default(cuid())
+  referralCodeId String
+  referralCode   ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+
+  // The user who was referred (referee)
+  refereeId String
+  referee   User   @relation("RefereeUser", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  // Depth starts at 1 for a direct referral. Used to enforce max-depth guard.
+  depth     Int @default(1)
+
+  // Lifecycle: pending → converted → rewarded | fraud
+  status    String @default("pending")  // pending, converted, rewarded, fraud
+
+  // When the referee completed the qualifying action (e.g. first confirmed tip)
+  convertedAt DateTime?
+
+  commissions ReferralCommission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Prevent duplicate referral for the same referee
+  @@unique([refereeId])
+  @@index([referralCodeId, status])
+  @@index([refereeId])
+  @@index([status, createdAt])
+  // Referrer dashboard: all referrals for a given code, newest first.
+  @@index([referralCodeId, createdAt(sort: Desc)], map: "idx_referral_code_createdAt")
+}
+
+// A commission earned by a referrer when their referee's tip is confirmed.
+// Multiple commissions may exist per referral (one per qualifying tip).
+model ReferralCommission {
+  id         String   @id @default(cuid())
+  referralId String
+  referral   Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  // The tip that triggered this commission
+  tipId  String
+  tip    Tip    @relation(fields: [tipId], references: [id], onDelete: Cascade)
+
+  // Referrer (denormalized for query efficiency)
+  referrerId String
+  referrer   User   @relation("ReferrerUser", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  amount         Float   // Commission amount (computed from tip.amount * commissionRate)
+  commissionRate Float   // Snapshot of the rate at the time of calculation
+  currency       String  @default("XLM")
+
+  // pending → paid | failed
+  status     String @default("pending")
+  paidAt     DateTime?
+  failReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tipId])  // One commission per tip (idempotent)
+  @@index([referrerId, status])
+  @@index([referralId, status])
+  @@index([status, createdAt])
+  // Affiliate payout sweep: pending commissions for a referrer, oldest first.
+  @@index([referrerId, status, createdAt], map: "idx_referralCommission_referrer_status_createdAt")
 }
 
 model Payout {
