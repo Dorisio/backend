@@ -5,26 +5,29 @@ let prisma: PrismaClient;
 
 // In-memory cache for blacklisted tokens
 const blacklistCache = new Map<string, Date>();
-let cleanupInterval: NodeJS.Timeout | null = null;
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 export const initTokenBlacklist = async (prismaClient: PrismaClient): Promise<void> => {
   prisma = prismaClient;
-  
+
   try {
     // Populate cache on startup
     const tokens = await prisma.blacklistedToken.findMany({
-      where: { expiresAt: { gt: new Date() } }
+      where: { expiresAt: { gt: new Date() } },
     });
     for (const t of tokens) {
       blacklistCache.set(t.token, t.expiresAt);
     }
     logger.info(`Loaded ${tokens.length} blacklisted tokens into cache`);
-    
+
     // Start periodic cleanup (every hour)
     if (!cleanupInterval) {
-      cleanupInterval = setInterval(() => {
-        cleanupExpiredTokens().catch(err => logger.error('Periodic cleanup error', err));
-      }, 60 * 60 * 1000);
+      cleanupInterval = setInterval(
+        () => {
+          cleanupExpiredTokens().catch((err) => logger.error('Periodic cleanup error', err));
+        },
+        60 * 60 * 1000
+      );
       cleanupInterval.unref(); // Don't block process exit
     }
   } catch (error) {
@@ -55,7 +58,7 @@ export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
       return false;
     }
   }
-  
+
   // Fallback to database just in case it was missed
   try {
     if (!prisma) return false;
@@ -75,10 +78,28 @@ export const isTokenBlacklisted = async (token: string): Promise<boolean> => {
   }
 };
 
+/** Fail closed when the JWT was issued under an obsolete credential generation. */
+export const isUserAuthVersionCurrent = async (
+  userId: string,
+  authVersion = 0
+): Promise<boolean> => {
+  try {
+    if (!prisma) return false;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { authVersion: true },
+    });
+    return user !== null && user.authVersion === authVersion;
+  } catch (error) {
+    logger.error('Failed to verify user auth version:', error);
+    return false;
+  }
+};
+
 export const cleanupExpiredTokens = async (): Promise<void> => {
   try {
     if (!prisma) return;
-    
+
     const now = new Date();
     // Cleanup database
     await prisma.blacklistedToken.deleteMany({
@@ -88,14 +109,18 @@ export const cleanupExpiredTokens = async (): Promise<void> => {
         },
       },
     });
-    
+
+    await prisma.passwordResetToken.deleteMany({
+      where: { expiresAt: { lt: now } },
+    });
+
     // Cleanup cache
     for (const [token, expiresAt] of blacklistCache.entries()) {
       if (expiresAt < now) {
         blacklistCache.delete(token);
       }
     }
-    
+
     logger.debug('Expired tokens cleaned up');
   } catch (error) {
     logger.error('Failed to clean up expired tokens:', error);
@@ -117,7 +142,7 @@ export const blacklistRefreshToken = async (jti: string, expiresAt: Date): Promi
 
 export const isRefreshTokenBlacklisted = async (jti: string): Promise<boolean> => {
   const token = `refresh:${jti}`;
-  
+
   // Check cache first
   const expiresAt = blacklistCache.get(token);
   if (expiresAt) {
@@ -128,7 +153,7 @@ export const isRefreshTokenBlacklisted = async (jti: string): Promise<boolean> =
       return false;
     }
   }
-  
+
   // Fallback to database
   try {
     if (!prisma) return false;

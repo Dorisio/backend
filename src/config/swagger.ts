@@ -42,6 +42,7 @@ export const swaggerConfig = {
       title: 'Dorisio API',
       description:
         'Payment orchestration and creator tipping platform on Stellar.\n\n' +
+        'Versioned paths are available under /api/v1 and /api/v2. Clients may select a version with API-Version or Accept: application/vnd.dorisio.v2+json. See docs/API_VERSIONING.md for the v1 to v2 migration guide.\n\n' +
         'All errors follow a single envelope: `{ success: false, error: { code, message, details? }, timestamp }`. ' +
         'See `docs/ERROR_CODES.md` for the full list of error codes and their HTTP status codes.',
       version: '0.1.0',

@@ -76,6 +76,21 @@ export const dbCacheSizeGauge = new Gauge({
   help: 'Number of entries currently held in the query result cache',
 });
 
+export const replicaQueriesTotal = new Counter({
+  name: 'dorisio_db_replica_queries_total',
+  help: 'Database queries routed to primary or read replicas',
+  labelNames: ['target', 'status'],
+});
+export const replicaFallbacksTotal = new Counter({
+  name: 'dorisio_db_replica_fallbacks_total',
+  help: 'Queries that fell back from a read replica to primary',
+});
+export const replicaLagSeconds = new Gauge({
+  name: 'dorisio_db_replica_lag_seconds',
+  help: 'Observed replication lag by replica',
+  labelNames: ['replica'],
+});
+
 export const dbCacheEvictionsCounter = new Counter({
   name: 'dorisio_db_cache_evictions_total',
   help: 'Total query cache evictions caused by capacity limits',

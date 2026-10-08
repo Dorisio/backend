@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
-import { ValidationError, NotFoundError, UnauthorizedError } from '../../utils/errors';
+import { NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 
 export interface FlagWalletRequest {
@@ -18,6 +18,27 @@ export interface FreezeAccountRequest {
 export class AdminService extends BaseService {
   constructor(private prisma: PrismaClient) {
     super();
+  }
+
+  /** Verify a bounded batch and return an item-level result for each ID. */
+  async bulkVerifyCreators(adminUserId: string, creatorIds: string[]): Promise<{
+    total: number;
+    succeeded: number;
+    failed: number;
+    results: Array<{ creatorId: string; success: boolean; reason?: string }>;
+  }> {
+    if (!(await this.isAdmin(adminUserId))) throw new UnauthorizedError('Only admins can verify creators');
+    if (creatorIds.length === 0 || creatorIds.length > 100) {
+      throw new ValidationError('creatorIds must contain between 1 and 100 items');
+    }
+    const results = await Promise.all(creatorIds.map(async (creatorId) => {
+      const creator = await this.prisma.creator.findUnique({ where: { id: creatorId }, select: { id: true } });
+      if (!creator) return { creatorId, success: false, reason: 'Creator not found' };
+      await this.prisma.creator.update({ where: { id: creatorId }, data: { verified: true } });
+      return { creatorId, success: true };
+    }));
+    const succeeded = results.filter((result) => result.success).length;
+    return { total: results.length, succeeded, failed: results.length - succeeded, results };
   }
 
   /**

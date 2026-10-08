@@ -1,0 +1,39 @@
+_format_version: '3.0'
+_transform: true
+
+services:
+  - name: dorisio-api
+    url: ${DORISIO_API_URL:-http://backend:3000}
+    routes:
+      - name: api
+        paths: ['/api']
+        strip_path: false
+        protocols: ['http', 'https']
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: ${GATEWAY_RATE_LIMIT_PER_MINUTE:-600}
+          policy: local
+      - name: jwt
+        config:
+          claims_to_verify: ['exp']
+          key_claim_name: iss
+      - name: correlation-id
+        config:
+          header_name: X-Request-Id
+          generator: uuid
+          echo_downstream: true
+      - name: prometheus
+
+  - name: dorisio-health
+    url: ${DORISIO_API_URL:-http://backend:3000}
+    routes:
+      - name: health
+        paths: ['/health', '/readiness']
+        protocols: ['http', 'https']
+    plugins:
+      - name: correlation-id
+        config:
+          header_name: X-Request-Id
+          generator: uuid
+          echo_downstream: true

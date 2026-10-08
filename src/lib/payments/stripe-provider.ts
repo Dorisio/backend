@@ -10,6 +10,7 @@ import {
   mapProviderStatus,
 } from './types';
 import { verifyWebhookSignature } from './webhook-signature';
+import { requestIdHeaders } from '../requestContext';
 
 /**
  * Stripe payment provider.
@@ -69,7 +70,7 @@ export class StripePaymentProvider implements PaymentProvider {
     }
 
     const response = await axios.post(`${this.apiBase}/v1/payment_intents`, body.toString(), {
-      headers: this.headers(params.idempotencyKey),
+      headers: { ...this.headers(params.idempotencyKey), ...requestIdHeaders() },
       timeout: this.timeoutMs,
     });
 
@@ -83,7 +84,7 @@ export class StripePaymentProvider implements PaymentProvider {
 
   async retrievePaymentIntent(providerRef: string): Promise<ProviderPaymentIntent> {
     const response = await axios.get(`${this.apiBase}/v1/payment_intents/${providerRef}`, {
-      headers: this.headers(),
+      headers: { ...this.headers(), ...requestIdHeaders() },
       timeout: this.timeoutMs,
     });
 
@@ -102,7 +103,7 @@ export class StripePaymentProvider implements PaymentProvider {
     if (params.reason) body.set('reason', params.reason);
 
     const response = await axios.post(`${this.apiBase}/v1/refunds`, body.toString(), {
-      headers: this.headers(params.idempotencyKey),
+      headers: { ...this.headers(params.idempotencyKey), ...requestIdHeaders() },
       timeout: this.timeoutMs,
     });
 

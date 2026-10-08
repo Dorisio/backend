@@ -24,7 +24,8 @@ export class AnalyticsService extends BaseService {
   > {
     return this.executeWithLogging('analytics.earningsOverTime', async () => {
       const cacheKey = `analytics:earnings:${creatorId}:${days}:${granularity}`;
-      const cached = queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
+      const cached =
+        queryCache.get<{ date: string; earnings: number; tipCount: number }[]>(cacheKey);
       if (cached) {
         return cached;
       }
@@ -56,17 +57,20 @@ export class AnalyticsService extends BaseService {
         const date = tip.createdAt;
 
         switch (granularity) {
-          case 'daily':
+          case 'daily': {
             dateKey = date.toISOString().split('T')[0];
             break;
-          case 'weekly':
+          }
+          case 'weekly': {
             const weekStart = new Date(date);
             weekStart.setDate(date.getDate() - date.getDay());
             dateKey = weekStart.toISOString().split('T')[0];
             break;
-          case 'monthly':
+          }
+          case 'monthly': {
             dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
             break;
+          }
         }
 
         if (!groupedByDate[dateKey]) {
@@ -107,7 +111,10 @@ export class AnalyticsService extends BaseService {
   > {
     return this.executeWithLogging('analytics.topSupporters', async () => {
       const cacheKey = `analytics:topSupporters:${creatorId}:${limit}`;
-      const cached = queryCache.get<{ userId: string; totalAmount: number; tipCount: number; lastTipDate: string }[]>(cacheKey);
+      const cached =
+        queryCache.get<
+          { userId: string; totalAmount: number; tipCount: number; lastTipDate: string }[]
+        >(cacheKey);
       if (cached) {
         return cached;
       }
@@ -208,8 +215,6 @@ export class AnalyticsService extends BaseService {
 
       const totalEarnings = stats._sum.amount || 0;
       const averageTipAmount = stats._avg.amount || 0;
-      const largestTip = stats._max.amount || 0;
-      const smallestTip = stats._min.amount || 0;
       const tipsPerDay = totalTips / days;
 
       // Calculate growth rate (compare last 7 days to previous 7 days)
@@ -235,9 +240,7 @@ export class AnalyticsService extends BaseService {
         }),
       ]);
 
-      const growthRate = previousTips > 0
-        ? ((recentTips - previousTips) / previousTips) * 100
-        : 0;
+      const growthRate = previousTips > 0 ? ((recentTips - previousTips) / previousTips) * 100 : 0;
 
       // Find peak day
       const tipsByDay = await this.prisma.tip.findMany({
@@ -348,4 +351,3 @@ export class AnalyticsService extends BaseService {
     queryCache.invalidateTags([`analytics:creator:${creatorId}`]);
   }
 }
-

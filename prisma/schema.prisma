@@ -8,25 +8,124 @@ datasource db {
 }
 
 model User {
+  id                      String    @id @default(cuid())
+  email                   String    @unique
+  password                String
+  name                    String?
+  bio                     String?
+  avatar                  String?
+  role                    String    @default("fan")
+  verified                Boolean   @default(false)
+  authVersion             Int       @default(0)
+  failedLoginAttempts     Int       @default(0)
+  lockedUntil             DateTime?
+  notificationPreferences Json      @default("{}")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  creator             Creator?
+  wallets             Wallet[]
+  tips                Tip[]
+  payments            Payment[]
+  twoFactor           TwoFactorAuth?
+  trustedDevices      TrustedDevice[]
+  twoFactorEvents     TwoFactorEvent[]
+  userRoles           UserRole[]
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+}
+
+model TwoFactorAuth {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secret      String
+  backupCodes String[]
+  enabled     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TrustedDevice {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model TwoFactorEvent {
   id        String   @id @default(cuid())
-  email     String   @unique
-  password  String
-  name      String?
-  role      String   @default("fan")
-  verified  Boolean  @default(false)
-  notificationPreferences Json @default("{}")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  success   Boolean
+  ip        String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
-  creator   Creator?
-  wallets   Wallet[]
-  tips      Tip[]
-  payments  Payment[]
+  @@index([userId, createdAt])
+}
 
-  // Referral program
-  referralCode        ReferralCode?
-  referredAs          Referral?              @relation("RefereeUser")
-  commissionsEarned   ReferralCommission[]   @relation("ReferrerUser")
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String?
+  hierarchy   Int              @default(0)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  permissions RolePermission[]
+  users       UserRole[]
+  changes     RoleChange[]
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  description String?
+  resource    String
+  action      String
+  roles       RolePermission[]
+  createdAt   DateTime         @default(now())
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
+  assignedBy String?
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model RoleChange {
+  id        String   @id @default(cuid())
+  roleId    String?
+  role      Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  actorId   String
+  targetId  String?
+  action    String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetId, createdAt])
 }
 
 model Creator {
@@ -39,20 +138,28 @@ model Creator {
   bio         String?
   avatar      String?
 
-  verified Boolean @default(false)
-  isPublic Boolean @default(true)
+  verified      Boolean   @default(false)
+  verifiedAt    DateTime?
+  verifiedUntil DateTime?
+  isPublic      Boolean   @default(true)
 
-  totalEarnings  Float @default(0)
-  pendingBalance Float @default(0)
-  
-  tips      Tip[]    @relation("CreatorTips")
-  webhooks  Webhook[]
-  freezes   AccountFreeze[]
-  payments  Payment[]
-  payouts   Payout[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  totalEarnings        Float                        @default(0)
+  pendingBalance       Float                        @default(0)
+  tips                 Tip[]                        @relation("CreatorTips")
+  webhooks             Webhook[]
+  freezes              AccountFreeze[]
+  payments             Payment[]
+  payouts              Payout[]
+  verificationRequests CreatorVerificationRequest[]
+  verificationEvents   CreatorVerificationEvent[]
+
+  // Teams this creator belongs to (#66).
+  teamMemberships CreatorTeamMember[] @relation("CreatorTeamMembers")
+
+  defaultAssetId String?
+  defaultAsset   StellarAsset? @relation("CreatorDefaultAsset", fields: [defaultAssetId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   @@index([verified, isPublic])
   // Creator discovery feeds: visibility filter + deterministic keyset order.
@@ -61,6 +168,55 @@ model Creator {
   @@index([isPublic, verified, totalEarnings(sort: Desc)], map: "idx_creator_public_verified_earnings")
   // Global top-earners ranking (no filters).
   @@index([totalEarnings(sort: Desc)], map: "idx_creator_totalEarnings")
+}
+
+model CreatorVerificationRequest {
+  id           String                        @id @default(cuid())
+  creatorId    String
+  creator      Creator                       @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  status       String                        @default("submitted") // submitted | approved | rejected | expired
+  statement    String?
+  reviewerId   String?
+  reviewedAt   DateTime?
+  reviewReason String?
+  expiresAt    DateTime
+  createdAt    DateTime                      @default(now())
+  updatedAt    DateTime                      @updatedAt
+  documents    CreatorVerificationDocument[]
+  events       CreatorVerificationEvent[]
+
+  @@index([status, createdAt])
+  @@index([creatorId, createdAt])
+  @@index([expiresAt])
+}
+
+model CreatorVerificationDocument {
+  id          String                     @id @default(cuid())
+  requestId   String
+  request     CreatorVerificationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  storageKey  String                     @unique
+  filename    String
+  contentType String
+  size        Int
+  createdAt   DateTime                   @default(now())
+
+  @@index([requestId])
+}
+
+model CreatorVerificationEvent {
+  id        String                      @id @default(cuid())
+  creatorId String
+  creator   Creator                     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  requestId String?
+  request   CreatorVerificationRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  actorId   String?
+  action    String // submitted | approved | rejected | expired | revoked
+  reason    String?
+  metadata  Json?
+  createdAt DateTime                    @default(now())
+
+  @@index([creatorId, createdAt])
+  @@index([requestId, createdAt])
 }
 
 model Wallet {
@@ -86,8 +242,13 @@ model Tip {
   creatorId String
   creator   Creator @relation("CreatorTips", fields: [creatorId], references: [id], onDelete: Cascade)
 
-  amount  Float
-  message String?
+  amount        Float
+  assetId       String?
+  asset         StellarAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assetCode     String        @default("USDC")
+  assetIssuer   String?
+  assetDecimals Int           @default(7)
+  message       String?
 
   status          String  @default("pending")
   transactionHash String? @unique
@@ -98,14 +259,21 @@ model Tip {
   // returns the original tip instead of creating a duplicate charge.
   idempotencyKey  String? @unique
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Tip message media (#64): images and short videos uploaded before the tip.
+  media           TipMedia[]
+  // Moderation state (#62): read paths only serve 'visible' rows, an open report
+  // can hide content while it is reviewed, and a resolved decision can remove it.
+  moderationState String     @default("visible") // visible, hidden, removed
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
   referralCommission ReferralCommission?
 
   @@index([creatorId, status, createdAt])
   @@index([fromUserId, createdAt])
   @@index([status])
+  // Public tip reads filter on the moderation state.
+  @@index([moderationState], map: "idx_tip_moderationState")
   // Unfiltered creator tip history ordered newest-first (keyset friendly).
   @@index([creatorId, createdAt(sort: Desc), id(sort: Desc)], map: "idx_tip_creator_createdAt")
   // User tip history filtered by status.
@@ -114,6 +282,64 @@ model Tip {
   @@index([status, createdAt], map: "idx_tip_status_createdAt")
   // "Top supporters" aggregation: filter then group by supporter without a sort step.
   @@index([creatorId, status, fromUserId], map: "idx_tip_creator_status_fromUser")
+  // Filtering / search (#56): one index per filter shape added to the listing
+  // and admin-search endpoints. See migration 20260927130000_tip_filter_indexes.
+  @@index([creatorId, amount], map: "idx_tip_creator_amount")
+  @@index([creatorId, createdAt], map: "idx_tip_creator_createdAt_range")
+  @@index([createdAt], map: "idx_tip_createdAt")
+  @@index([amount], map: "idx_tip_amount")
+  @@index([status, amount], map: "idx_tip_status_amount")
+  @@index([fromUserId, amount], map: "idx_tip_fromUser_amount")
+  @@index([assetId, createdAt], map: "idx_tip_asset_createdAt")
+}
+
+model StellarAsset {
+  id        String   @id @default(cuid())
+  code      String
+  issuer    String?
+  name      String
+  decimals  Int      @default(7)
+  enabled   Boolean  @default(true)
+  priority  Int      @default(0)
+  feeBps    Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tips            Tip[]
+  defaultCreators Creator[] @relation("CreatorDefaultAsset")
+
+  @@unique([code, issuer], map: "uniq_stellarAsset_code_issuer")
+  @@index([enabled, priority], map: "idx_stellarAsset_enabled_priority")
+}
+
+model Session {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String    @unique
+  device       String?
+  userAgent    String?
+  ipAddress    String?
+  lastActivity DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([lastActivity])
+}
+
+model AuthAttempt {
+  id        String   @id @default(cuid())
+  email     String?
+  ipAddress String
+  action    String
+  success   Boolean  @default(false)
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([ipAddress, action, createdAt])
+  @@index([email, action, createdAt])
 }
 
 model BlacklistedToken {
@@ -151,26 +377,60 @@ model VerificationToken {
   @@index([userId])
 }
 
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  email     String
+  // SHA-256 digest of the one-time secret; the raw token is only emailed.
+  token     String   @unique
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([expiresAt])
+  @@index([userId])
+}
+
 model Webhook {
   id        String  @id @default(cuid())
   creatorId String
   creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
-  url    String
-  events String[] // tip.created, tip.confirmed, tip.failed, payout.completed
-  secret String // HMAC secret for signature verification
-  active Boolean  @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  url             String
+  events          String[] // Versioned event subscriptions, e.g. tip.created
+  secret          String // HMAC secret for signature verification
+  previousSecret  String? // Previous secret during rotation period
+  secretRotatedAt DateTime? // When secret was last rotated
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   webhookEvents WebhookEvent[]
+  webhookNonces WebhookNonce[]
 
   @@index([creatorId])
   // Webhook listing per creator, newest first.
   @@index([creatorId, createdAt(sort: Desc)], map: "idx_webhook_creator_createdAt")
   // Delivery worker only fans out to active endpoints.
   @@index([creatorId, active, createdAt(sort: Desc)], map: "idx_webhook_creator_active_createdAt")
+}
+
+model WebhookNonce {
+  id        String  @id @default(cuid())
+  webhookId String
+  webhook   Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  nonce     String   @unique // The nonce value from webhook request
+  timestamp BigInt // Unix timestamp of the webhook request
+  expiresAt DateTime // When this nonce can be cleaned up
+
+  createdAt DateTime @default(now())
+
+  @@index([webhookId, timestamp])
+  @@index([expiresAt]) // For cleanup of expired nonces
+  @@index([nonce]) // Fast lookup for replay detection
 }
 
 model WebhookEvent {
@@ -186,7 +446,7 @@ model WebhookEvent {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([webhookId, status, createdAt(sort: Desc)])
   @@index([webhookId])
   @@index([status])
@@ -201,8 +461,8 @@ model WebhookEvent {
 // A payment processed by an external provider (Stripe et al). Raw card data is
 // never stored — only provider references and tokenized intent ids.
 model Payment {
-  id             String   @id @default(cuid())
-  idempotencyKey String   @unique
+  id             String @id @default(cuid())
+  idempotencyKey String @unique
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -238,9 +498,9 @@ model PaymentEvent {
   paymentId String
   payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
-  type   String // payment.created, payment.succeeded, payment.failed, refund.created, chargeback.created, webhook.received
-  actor  String? // user id, "system" or "provider"
-  data   Json?
+  type  String // payment.created, payment.succeeded, payment.failed, refund.created, chargeback.created, webhook.received
+  actor String? // user id, "system" or "provider"
+  data  Json?
 
   // Provider event id — unique so webhook redelivery is idempotent.
   providerEventId String? @unique
@@ -251,17 +511,36 @@ model PaymentEvent {
   @@index([type])
 }
 
+// Append-only compliance trail. Application code never exposes update/delete
+// operations for this model; retention is performed by a dedicated sweep.
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  changes    Json     @default("{}")
+  timestamp  DateTime @default(now())
+  ipAddress  String?
+  requestId  String?
+
+  @@index([resource, resourceId, timestamp])
+  @@index([userId, timestamp])
+  @@index([action, timestamp])
+  @@index([timestamp])
+}
+
 model Refund {
   id             String  @id @default(cuid())
   paymentId      String
   payment        Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   idempotencyKey String  @unique
 
-  amount       Float
-  currency     String  @default("USD")
-  reason       String?
-  status       String  @default("pending") // pending, succeeded, failed
-  providerRef  String?
+  amount      Float
+  currency    String  @default("USD")
+  reason      String?
+  status      String  @default("pending") // pending, succeeded, failed
+  providerRef String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -284,7 +563,7 @@ model WalletFlag {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   @@index([resolved, address])
   @@index([resolved, createdAt(sort: Desc)])
   @@index([resolved])
@@ -447,9 +726,9 @@ model ReferralCommission {
 }
 
 model Payout {
-  id         String       @id @default(cuid())
-  creatorId  String
-  creator    Creator      @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  id        String  @id @default(cuid())
+  creatorId String
+  creator   Creator @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
   amount          Float
   status          PayoutStatus @default(pending)
@@ -457,8 +736,8 @@ model Payout {
   walletAddress   String
 
   errorMessage String?
-  retryCount    Int      @default(0)
-  nextRetryAt   DateTime?
+  retryCount   Int       @default(0)
+  nextRetryAt  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -471,4 +750,448 @@ model Payout {
   // Retry worker: failed payouts ordered by next retry time.
   @@index([status, nextRetryAt], map: "idx_payout_status_nextRetryAt")
   @@index([transactionHash])
+}
+
+// Media attached to tip messages (#64). The row exists before the bytes do (it is
+// the upload reservation), becomes `ready` once the file has been verified and
+// scanned, and is attached to a tip by setting `tipId` at tip creation time.
+model TipMedia {
+  id     String @id @default(cuid())
+  userId String
+
+  // Set when the media is attached to a tip; only `ready` media can be attached.
+  tipId String?
+  tip   Tip?    @relation(fields: [tipId], references: [id], onDelete: Cascade)
+
+  kind   String // image, video
+  status String @default("pending") // pending, uploaded, scanning, ready, rejected, failed
+
+  mimeType   String
+  fileName   String
+  storageKey String @unique
+  sizeBytes  Int    @default(0)
+
+  width           Int?
+  height          Int?
+  durationSeconds Float?
+  // Derived renditions (preview/optimized/thumbnail) with their keys and sizes.
+  derivatives     Json   @default("[]")
+
+  processingStatus String  @default("pending") // pending, done, skipped, failed
+  processingError  String?
+
+  scanner         String?
+  scanSignature   String?
+  scanCompletedAt DateTime?
+
+  uploadedAt DateTime?
+  attachedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // A user's own uploads, newest first, filtered by status.
+  @@index([userId, status, createdAt(sort: Desc)], map: "idx_tipMedia_user_status_createdAt")
+  // Media for a tip, in attachment order.
+  @@index([tipId, attachedAt], map: "idx_tipMedia_tip_attachedAt")
+  // Sweep for uploads that were reserved but never completed.
+  @@index([status, createdAt], map: "idx_tipMedia_status_createdAt")
+}
+
+// Per-user storage quota (#64). `usedBytes` counts verified media; uploads that
+// are still in flight are counted separately as reserved.
+model MediaQuota {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  usedBytes  Int @default(0)
+  fileCount  Int @default(0)
+  limitBytes Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Team / organization support (#66)
+//
+// A team groups creator accounts under a single organization: one verification,
+// one payout account, per-member revenue splits, contribution tracking and an
+// append-only audit trail of every membership change.
+// ---------------------------------------------------------------------------
+
+enum TeamRole {
+  owner
+  admin
+  member
+}
+
+enum TeamMemberStatus {
+  active
+  removed
+}
+
+enum TeamPayoutMode {
+  team
+  split
+}
+
+enum TeamPayoutStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+model CreatorTeam {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+  avatar      String?
+
+  // One verification covers every member of the team.
+  verified         Boolean   @default(false)
+  verifiedAt       DateTime?
+  verificationNote String?
+
+  isPublic Boolean @default(true)
+
+  // Team payout account: a single destination wallet for collective revenue.
+  payoutWalletAddress  String?
+  payoutWalletVerified Boolean        @default(false)
+  payoutMode           TeamPayoutMode @default(team)
+  pendingBalance       Float          @default(0)
+  reservedBalance      Float          @default(0)
+  totalEarnings        Float          @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       CreatorTeamMember[]
+  splits        TeamRevenueSplit[]
+  contributions TeamContribution[]
+  distributions TeamRevenueDistribution[]
+  payouts       TeamPayout[]
+  auditLogs     TeamAuditLog[]
+
+  // Discovery feed: visibility filter, verified teams first, newest first.
+  @@index([isPublic, verified, createdAt(sort: Desc), id(sort: Desc)], map: "idx_creatorTeam_public_verified_createdAt")
+  // Collective leaderboard ordering.
+  @@index([totalEarnings(sort: Desc)], map: "idx_creatorTeam_totalEarnings")
+}
+
+// Membership of a creator inside a team, with their role and contribution
+// counters (kept denormalised so the team dashboard is a single round of reads).
+model CreatorTeamMember {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  creatorId String
+  creator   Creator @relation("CreatorTeamMembers", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  role   TeamRole         @default(member)
+  status TeamMemberStatus @default(active)
+
+  contributionCount  Int   @default(0)
+  contributionAmount Float @default(0)
+
+  joinedAt    DateTime  @default(now())
+  invitedById String?
+  removedAt   DateTime?
+  removedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  splits        TeamRevenueSplit[]
+  contributions TeamContribution[]
+  distributions TeamRevenueShare[]
+  payouts       TeamPayout[]
+
+  @@unique([teamId, creatorId], map: "uniq_creatorTeamMember_team_creator")
+  // Member rosters and "my teams" lookups both filter on the status.
+  @@index([teamId, status], map: "idx_creatorTeamMember_team_status")
+  @@index([creatorId, status], map: "idx_creatorTeamMember_creator_status")
+}
+
+// Configured revenue share for one member, in basis points (1 bps = 0.01%).
+model TeamRevenueSplit {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  memberId String
+  member   CreatorTeamMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  shareBps    Int
+  enabled     Boolean @default(true)
+  updatedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([teamId, memberId], map: "uniq_teamRevenueSplit_team_member")
+  @@index([teamId, enabled], map: "idx_teamRevenueSplit_team_enabled")
+}
+
+// A single contribution recorded by a team member (work, content, community...).
+model TeamContribution {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  memberId String
+  member   CreatorTeamMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  type        String // development | design | content | marketing | community | operations | manual
+  description String?
+  amount      Float   @default(0)
+  weight      Int     @default(1)
+  reference   String?
+
+  occurredAt   DateTime @default(now())
+  recordedById String?
+  createdAt    DateTime @default(now())
+
+  @@index([teamId, occurredAt(sort: Desc)], map: "idx_teamContribution_team_occurredAt")
+  @@index([teamId, type], map: "idx_teamContribution_team_type")
+  @@index([memberId, occurredAt(sort: Desc)], map: "idx_teamContribution_member_occurredAt")
+}
+
+// One revenue distribution event (tips, sponsorship, manual) and the shares it
+// produced. Distributions are immutable: a correction is a new distribution.
+model TeamRevenueDistribution {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  amount    Float
+  currency  String  @default("XLM")
+  source    String  @default("manual")
+  reference String?
+  note      String?
+
+  distributedById String?
+  createdAt       DateTime @default(now())
+
+  shares TeamRevenueShare[]
+
+  @@index([teamId, createdAt(sort: Desc)], map: "idx_teamRevenueDistribution_team_createdAt")
+  @@index([source], map: "idx_teamRevenueDistribution_source")
+}
+
+// A member's slice of one distribution (amount already split and rounded).
+model TeamRevenueShare {
+  id String @id @default(cuid())
+
+  distributionId String
+  distribution   TeamRevenueDistribution @relation(fields: [distributionId], references: [id], onDelete: Cascade)
+
+  memberId String
+  member   CreatorTeamMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  shareBps Int
+  amount   Float
+  // True when the member's own balance was credited (split payout mode).
+  credited Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([distributionId], map: "idx_teamRevenueShare_distribution")
+  @@index([memberId, createdAt(sort: Desc)], map: "idx_teamRevenueShare_member_createdAt")
+}
+
+// A payout requested against the team's collective balance. The amount moves
+// from pendingBalance to reservedBalance while the payout is in flight.
+model TeamPayout {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  amount          Float
+  status          TeamPayoutStatus @default(pending)
+  walletAddress   String
+  transactionHash String?          @unique
+  errorMessage    String?
+
+  requestedById String?
+  requestedBy   CreatorTeamMember? @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([teamId, status], map: "idx_teamPayout_team_status")
+  @@index([teamId, createdAt(sort: Desc)], map: "idx_teamPayout_team_createdAt")
+  @@index([status, createdAt], map: "idx_teamPayout_status_createdAt")
+}
+
+// Append-only audit trail: every team and membership change is logged here.
+model TeamAuditLog {
+  id String @id @default(cuid())
+
+  teamId String
+  team   CreatorTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  action          String // team.created, member.added, member.role_changed, revenue.distributed, ...
+  actorId         String?
+  actorUserId     String?
+  targetMemberId  String?
+  targetCreatorId String?
+  metadata        Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([teamId, createdAt(sort: Desc)], map: "idx_teamAuditLog_team_createdAt")
+  @@index([teamId, action], map: "idx_teamAuditLog_team_action")
+}
+
+enum SubscriptionInterval {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  PAST_DUE
+  CANCELED
+}
+
+enum ChargeStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model Subscription {
+  id                 String               @id @default(uuid())
+  supporterId        String
+  creatorId          String
+  amount             Decimal              @db.Decimal(20, 7)
+  interval           SubscriptionInterval
+  status             SubscriptionStatus   @default(ACTIVE)
+  discountPercent    Int                  @default(0)
+  prorateFirst       Boolean              @default(false)
+  currentPeriodStart DateTime
+  nextChargeAt       DateTime
+  failedAttempts     Int                  @default(0)
+  canceledAt         DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  charges            SubscriptionCharge[]
+
+  @@index([status, nextChargeAt])
+  @@index([creatorId])
+  @@index([supporterId])
+}
+
+model SubscriptionCharge {
+  id             String       @id @default(uuid())
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id])
+  periodStart    DateTime
+  amount         Decimal      @db.Decimal(20, 7)
+  status         ChargeStatus @default(PENDING)
+  attempt        Int          @default(1)
+  tipId          String?
+  failureReason  String?
+  createdAt      DateTime     @default(now())
+
+  @@unique([subscriptionId, periodStart])
+}
+
+// An abuse report filed against a tip, a user or a creator. It is triaged
+// automatically, investigated by an admin and resolved with a recorded
+// decision; the resolution text and decision stay on the row forever.
+model Report {
+  id         String @id @default(cuid())
+  reporterId String
+
+  targetType String // tip, user, creator
+  targetId   String
+
+  reportType String // spam, harassment, inappropriate, fraud, copyright
+  reason     String
+  details    String?
+
+  status   String @default("reported") // reported, investigating, resolved, dismissed
+  decision String @default("none") // none, approved, denied
+
+  priority     String @default("normal") // low, normal, high, urgent
+  // Numeric mirror of `priority` so the queue can order by urgency in SQL
+  // instead of sorting in the application.
+  priorityRank Int    @default(2)
+
+  resolution String?
+  resolvedBy String?
+  resolvedAt DateTime?
+
+  // Moderator currently looking at it, so two admins do not duplicate the work.
+  assignedTo String?
+
+  // Automatic triage result (spam rules), kept so a decision can be explained.
+  autoFlagged Boolean @default(false)
+  spamScore   Int     @default(0)
+  spamSignals Json    @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  appeals ReportAppeal[]
+
+  // Open queue: status filter, then urgency, then oldest first.
+  @@index([status, priorityRank, createdAt], map: "idx_report_status_priority_createdAt")
+  @@index([targetType, targetId], map: "idx_report_target")
+  @@index([reporterId, createdAt(sort: Desc)], map: "idx_report_reporter_createdAt")
+  @@index([reportType, status], map: "idx_report_reportedType_status")
+}
+
+// The author of the moderated content gets one appeal per report.
+model ReportAppeal {
+  id       String @id @default(cuid())
+  reportId String
+  report   Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  appellantId String
+  message     String
+  status      String    @default("pending") // pending, accepted, rejected
+  notes       String?
+  reviewedBy  String?
+  reviewedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt], map: "idx_reportAppeal_status_createdAt")
+}
+
+// Append-only moderation audit trail: who did what to which target, and why.
+model ModerationAction {
+  id       String  @id @default(cuid())
+  reportId String?
+
+  action String // report.created, report.auto_triaged, report.claimed, report.resolved, report.dismissed, content.hidden, content.restored, content.removed, appeal.filed, appeal.resolved
+
+  targetType String // tip, user, creator
+  targetId   String
+
+  actorId  String // user id, or "system" for automatic actions
+  reason   String?
+  metadata Json    @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([targetType, targetId, createdAt], map: "idx_moderationAction_target_createdAt")
+  @@index([reportId, createdAt], map: "idx_moderationAction_report_createdAt")
+  @@index([action, createdAt], map: "idx_moderationAction_action_createdAt")
 }

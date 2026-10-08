@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   runWithRequestContext,
   getRequestContext,
+  getRequestId,
+  requestIdHeaders,
+  resolveRequestId,
+  sanitizeRequestId,
   setRequestContextUserId,
+  withRequestIdHeaders,
+  withRequestIdPayload,
 } from '../requestContext';
 
 describe('requestContext (#26)', () => {
@@ -47,6 +53,28 @@ describe('requestContext (#26)', () => {
 
     runWithRequestContext({ requestId: 'req-4' }, () => {
       expect(getRequestContext()).toEqual({ requestId: 'req-4' });
+    });
+  });
+
+  it('accepts only bounded, header-safe incoming IDs', () => {
+    expect(sanitizeRequestId(' upstream.req-1 ')).toBe('upstream.req-1');
+    expect(sanitizeRequestId('bad id')).toBeUndefined();
+    expect(sanitizeRequestId('a\r\nb')).toBeUndefined();
+    expect(sanitizeRequestId('a'.repeat(129))).toBeUndefined();
+    expect(resolveRequestId('bad id', () => 'generated')).toBe('generated');
+  });
+
+  it('forwards the active ID to HTTP headers and webhook payloads', () => {
+    runWithRequestContext({ requestId: 'req-forward-1' }, () => {
+      expect(getRequestId()).toBe('req-forward-1');
+      expect(requestIdHeaders()).toEqual({ 'X-Request-ID': 'req-forward-1' });
+      expect(withRequestIdHeaders({ headers: { Authorization: 'Bearer token' } })).toEqual({
+        headers: { Authorization: 'Bearer token', 'X-Request-ID': 'req-forward-1' },
+      });
+      expect(withRequestIdPayload({ event: 'tip.created' })).toEqual({
+        event: 'tip.created',
+        requestId: 'req-forward-1',
+      });
     });
   });
 });

@@ -11,6 +11,12 @@
 -- User: admin listing filters by role and orders by recency.
 CREATE INDEX IF NOT EXISTS "idx_user_role_createdAt" ON "User"("role", "createdAt" DESC);
 
+-- User: role equality filter (moderation queues).
+CREATE INDEX IF NOT EXISTS "idx_user_role" ON "User"("role");
+
+-- User: recency ordering without a role filter.
+CREATE INDEX IF NOT EXISTS "idx_user_createdAt" ON "User"("createdAt");
+
 -- Creator: public discovery feed (isPublic filter + newest-first keyset order).
 CREATE INDEX IF NOT EXISTS "idx_creator_public_createdAt"
   ON "Creator"("isPublic", "createdAt" DESC, id DESC);

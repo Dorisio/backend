@@ -2,13 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 import { executeWithBreaker } from '../circuit-breaker';
-import type {
-  HorizonServer,
-  StellarAccount,
-  TransactionResponse,
-  AccountBalance,
-  NetworkStatus,
-} from './types';
+import type { HorizonServer } from './types';
 
 /**
  * Stellar Client for interacting with the Stellar network

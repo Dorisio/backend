@@ -3,6 +3,7 @@ import { BaseService } from '../../services/base.service';
 import { CreateCreatorRequest, UpdateCreatorRequest } from './creator.types';
 import { ValidationError } from '../../utils/errors';
 import { getOrFetch, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import { invalidateCaches, creatorCacheKeys } from '../../lib/cache/invalidation';
 import {
   DEFAULT_PAGE_SIZE,
   sanitizePageNumber,
@@ -151,6 +152,7 @@ export class CreatorService extends BaseService {
         const usernameCacheKey = createCacheKey(CacheType.CREATOR, `username:${creator.username}`);
         await update(usernameCacheKey, creator, CacheType.CREATOR);
       }
+      await invalidateCaches(creatorCacheKeys(creatorId, creator.username), 'creator.updated');
 
       return creator;
     });

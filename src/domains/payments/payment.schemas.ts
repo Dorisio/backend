@@ -7,6 +7,8 @@ import {
   isValidStellarPublicKey,
 } from '../../lib/stellar/validation';
 import { zodToJsonSchema } from '../../utils/zod-to-json-schema';
+import { TIP_TEXT_SEARCH_MAX_LENGTH } from './tip-filters';
+import { MAX_MEDIA_PER_TIP } from '../media/media.types';
 
 /**
  * Request schemas for the payments domain.
@@ -60,6 +62,24 @@ const boundedInt = (min: number, max: number, label: string) =>
     .min(min, `${label} must be at least ${min}`)
     .max(max, `${label} must not exceed ${max}`);
 
+const boundedNumber = (min: number, max: number, label: string) =>
+  z.coerce
+    .number()
+    .finite(`${label} must be a finite number`)
+    .min(min, `${label} must be at least ${min}`)
+    .max(max, `${label} must not exceed ${max}`);
+
+/**
+ * Accepts any parseable date-time and normalizes it to ISO-8601 so the service
+ * layer (and the echoed-back filter metadata) sees one canonical format.
+ */
+const isoDateSchema = (label: string) =>
+  z
+    .string()
+    .trim()
+    .refine((value) => !Number.isNaN(Date.parse(value)), `${label} must be an ISO-8601 date-time`)
+    .transform((value) => new Date(value).toISOString());
+
 /**
  * POST /api/v1/transactions/tip
  */
@@ -72,7 +92,16 @@ export const CreateTipSchema = z.object({
     .max(MAX_PAYMENT_AMOUNT, `Amount must not exceed ${MAX_PAYMENT_AMOUNT}`),
   message: sanitizedText(500, 'Message').optional(),
   currency: z.enum(['USD', 'XLM', 'USDC']).default('USD'),
+  assetId: z.string().trim().min(1).max(100).optional(),
   idempotencyKey: z.string().trim().min(8, 'Idempotency key is too short').max(255).optional(),
+  /**
+   * Media uploaded beforehand and attached to this tip's message (#64). Every
+   * id must belong to the tipper and be in the `ready` state.
+   */
+  mediaIds: z
+    .array(z.string().trim().min(1, 'Media ID is required').max(100, 'Media ID is too long'))
+    .max(MAX_MEDIA_PER_TIP, `A tip can carry at most ${MAX_MEDIA_PER_TIP} media items`)
+    .optional(),
 });
 
 /**
@@ -135,18 +164,39 @@ export const CreatorIdParamsSchema = z.object({
 
 /**
  * Pagination/filtering query shared by history and creator listings.
+ *
+ * Besides pagination and sorting it accepts the database-side filters added for
+ * #56: date range, amount range, status, free-text search, sender and creator.
+ * Every filter is optional and combined with AND by `buildTipWhere`.
  */
-export const TipHistoryQuerySchema = z.object({
-  page: boundedInt(1, 1_000_000, 'page').optional(),
-  pageSize: boundedInt(1, 100, 'pageSize').optional(),
-  limit: boundedInt(1, 100, 'limit').optional(),
-  cursor: z.string().trim().max(512).optional(),
-  after: z.string().trim().max(512).optional(),
-  first: boundedInt(1, 100, 'first').optional(),
-  sortBy: sortBySchema.optional(),
-  sortOrder: sortOrderSchema.optional(),
-  status: TipStatusEnum.optional(),
-});
+export const TipHistoryQuerySchema = z
+  .object({
+    page: boundedInt(1, 1_000_000, 'page').optional(),
+    pageSize: boundedInt(1, 100, 'pageSize').optional(),
+    limit: boundedInt(1, 100, 'limit').optional(),
+    cursor: z.string().trim().max(512).optional(),
+    after: z.string().trim().max(512).optional(),
+    first: boundedInt(1, 100, 'first').optional(),
+    sortBy: sortBySchema.optional(),
+    sortOrder: sortOrderSchema.optional(),
+    status: TipStatusEnum.optional(),
+    // --- Filters (#56) -----------------------------------------------------
+    minDate: isoDateSchema('minDate').optional(),
+    maxDate: isoDateSchema('maxDate').optional(),
+    minAmount: boundedNumber(0, MAX_PAYMENT_AMOUNT, 'minAmount').optional(),
+    maxAmount: boundedNumber(0, MAX_PAYMENT_AMOUNT, 'maxAmount').optional(),
+    query: sanitizedText(TIP_TEXT_SEARCH_MAX_LENGTH, 'Search query').optional(),
+    fromUserId: z.string().trim().min(1, 'fromUserId is required').max(100).optional(),
+    creatorId: z.string().trim().min(1, 'creatorId is required').max(100).optional(),
+  })
+  .refine(
+    (q) => !q.minDate || !q.maxDate || Date.parse(q.minDate) <= Date.parse(q.maxDate),
+    { message: 'minDate must be before or equal to maxDate', path: ['minDate'] }
+  )
+  .refine(
+    (q) => q.minAmount === undefined || q.maxAmount === undefined || q.minAmount <= q.maxAmount,
+    { message: 'minAmount must be less than or equal to maxAmount', path: ['minAmount'] }
+  );
 
 export type CreateTipInput = z.infer<typeof CreateTipSchema>;
 export type UpdateTipStatusInput = z.infer<typeof UpdateTipStatusSchema>;

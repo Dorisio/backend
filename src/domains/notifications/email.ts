@@ -1,6 +1,9 @@
 import { emailNotificationQueue } from '../../lib/queue';
+import { config } from '../../config/env';
+import { isFeatureEnabled } from '../../config/features';
+import { logger } from '../../utils/logger';
 
-export type EmailTemplate = 'verification' | 'password-reset' | 'notification';
+export type EmailTemplate = 'verification' | 'password-reset' | 'creator-verification' | 'account-locked' | 'notification';
 
 export interface EmailNotification {
   to: string;
@@ -11,6 +14,13 @@ export interface EmailNotification {
 }
 
 export async function enqueueEmail(notification: EmailNotification): Promise<string> {
+  // Feature flag gate (#60): verification mail is skipped entirely when the
+  // email-verification flag is disabled for the environment.
+  if (notification.template === 'verification' && !isFeatureEnabled('emailVerification')) {
+    logger.info({ to: notification.to }, 'Email verification disabled by feature flag, skipping send');
+    return '';
+  }
+
   const job = await emailNotificationQueue.add('send', notification, {
     attempts: 5,
     backoff: { type: 'exponential', delay: 1000 },
@@ -47,5 +57,33 @@ export function renderEmail(template: EmailTemplate, data: Record<string, string
   if (template === 'password-reset') {
     return { subject: 'Reset your Dorisio password', html: `<p>Hello ${name},</p><p><a href="${link}">Reset your password</a></p>` };
   }
+  if (template === 'creator-verification') {
+    const status = escape(data.status ?? 'updated');
+    const reason = data.reason ? `<p>Review note: ${escape(data.reason)}</p>` : '';
+    return { subject: `Creator verification ${status}`, html: `<p>Hello ${name},</p><p>Your creator verification request was ${status}.</p>${reason}` };
+  }
+  if (template === 'account-locked') {
+    return { subject: 'Your Dorisio account was temporarily locked', html: `<p>Hello ${name},</p><p>We detected repeated failed login attempts. Your account is temporarily locked until ${escape(data.unlockAt ?? 'later')}.</p>` };
+  }
   return { subject: escape(data.subject ?? 'Dorisio notification'), html: `<p>Hello ${name},</p><p>${escape(data.message ?? '')}</p>` };
+}
+
+/**
+ * Sends (enqueues) a templated email. Thin wrapper used by services
+ * (`AuthService`); actual delivery happens on the email notification worker.
+ * Never throws: delivery failures are logged and reported as `false` so
+ * callers can degrade gracefully.
+ */
+export async function sendEmail(notification: EmailNotification): Promise<boolean> {
+  if (!config.SENDGRID_API_KEY) {
+    logger.warn({ to: notification.to, template: notification.template }, 'SENDGRID_API_KEY not configured; email skipped');
+    return false;
+  }
+  try {
+    await enqueueEmail(notification);
+    return true;
+  } catch (err) {
+    logger.error({ err, to: notification.to }, 'Failed to enqueue email');
+    return false;
+  }
 }

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CacheWarmer } from '../cache-warming';
-import cache from '../index';
 
 // Mock Prisma
 const mockPrisma = {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createClient } from 'redis';
 import { redisPool, startRedisHealthCheck, stopRedisHealthCheck } from '../lib/redisPool';
 

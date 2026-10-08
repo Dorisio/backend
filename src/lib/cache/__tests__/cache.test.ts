@@ -3,7 +3,6 @@ import cache, {
   CacheType,
   TTL_CONFIG,
   getStats,
-  getHitRate,
   resetStats,
   increment,
   zAdd,
@@ -95,13 +94,13 @@ describe('Cache Layer', () => {
 
     it('should handle fetch errors gracefully', async () => {
       const fetchFn = vi.fn().mockRejectedValue(new Error('DB Error'));
-      
+
       const result = await getOrFetch({
         key: 'test:123',
         type: CacheType.USER,
         fetchFn,
       });
-      
+
       expect(result).toBeUndefined();
     });
   });
@@ -163,7 +162,7 @@ describe('Cache Layer', () => {
       vi.mocked(withRedis).mockImplementation(async (fn: any) => {
         return await fn({ set: vi.fn().mockResolvedValue('OK') });
       });
-      
+
       await expect(cache.set('test:jitter', { data: 'test' }, baseTtl)).resolves.not.toThrow();
     });
   });
@@ -189,9 +188,7 @@ describe('Cache Layer', () => {
     });
 
     it('should handle concurrent reads', async () => {
-      const operations = Array.from({ length: 100 }, (_, i) =>
-        cache.get(`test:concurrent:${i}`)
-      );
+      const operations = Array.from({ length: 100 }, (_, i) => cache.get(`test:concurrent:${i}`));
 
       await expect(Promise.all(operations)).resolves.not.toThrow();
     });

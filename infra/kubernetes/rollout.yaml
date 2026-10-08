@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: dorisio-backend
+  labels:
+    app.kubernetes.io/name: dorisio-backend
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dorisio-backend
+  strategy:
+    blueGreen:
+      activeService: dorisio-backend
+      previewService: dorisio-backend-preview
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 30
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dorisio-backend
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: backend
+          image: ghcr.io/dorisio/backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: dorisio-backend-config
+            - secretRef:
+                name: dorisio-backend-secrets
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: app-data
+              mountPath: /var/lib/dorisio
+      volumes:
+        - name: app-data
+          persistentVolumeClaim:
+            claimName: dorisio-backend-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dorisio-backend-preview
+spec:
+  selector:
+    app.kubernetes.io/name: dorisio-backend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

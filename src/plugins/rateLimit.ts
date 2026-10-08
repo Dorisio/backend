@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, RouteOptions } from 'fastify';
 import rateLimit, { RateLimitOptions } from '@fastify/rate-limit';
 import IORedis from 'ioredis';
 import jwt, { Secret } from 'jsonwebtoken';
+import { createHash } from 'node:crypto';
 import { config } from '../config/env';
 import {
   RATE_LIMIT_ENABLED,
@@ -15,7 +16,7 @@ import {
   RouteMatcher,
   routeMatches,
 } from '../config/rate-limit';
-import { isAuthGuard } from '../middleware/auth-guards';
+import { isAuthGuard, isServiceGuard } from '../middleware/auth-guards';
 import { TooManyRequestsError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -31,11 +32,11 @@ import { logger } from '../utils/logger';
  * sized by its class.
  */
 
-export type RouteClassification = RateLimitClass | 'exempt';
+export type RouteClassification = RateLimitClass | 'authLogin' | 'authRegister' | 'authRecovery' | 'exempt';
 
 export interface RateLimitingOptions {
   enabled?: boolean;
-  policies?: Record<RateLimitClass, RateLimitPolicy>;
+  policies?: Record<string, RateLimitPolicy>;
   rules?: RateLimitRule[];
   exemptions?: RouteMatcher[];
   store?: 'memory' | 'redis';
@@ -50,10 +51,17 @@ function routeHasAuthGuard(routeOptions: RouteOptions): boolean {
   });
 }
 
+function routeHasServiceGuard(routeOptions: RouteOptions): boolean {
+  return LIFECYCLE_HOOKS.some((name) => {
+    const hook = routeOptions[name];
+    return Array.isArray(hook) ? hook.some(isServiceGuard) : isServiceGuard(hook);
+  });
+}
 function classifyMethod(
   method: string,
   url: string,
   hasAuthGuard: boolean,
+  hasServiceGuard: boolean,
   rules: RateLimitRule[],
   exemptions: RouteMatcher[]
 ): RouteClassification {
@@ -62,7 +70,7 @@ function classifyMethod(
   if (exemptions.some((m) => routeMatches(m, effective, url))) return 'exempt';
   const rule = rules.find((r) => routeMatches(r, effective, url));
   if (rule) return rule.class;
-  return hasAuthGuard ? 'authenticated' : 'public';
+  return hasServiceGuard ? 'internal' : hasAuthGuard ? 'authenticated' : 'public';
 }
 
 /**
@@ -71,20 +79,37 @@ function classifyMethod(
  */
 export function classifyRoute(
   routeOptions: RouteOptions,
-  policies: Record<RateLimitClass, RateLimitPolicy> = RATE_LIMIT_POLICIES,
+  policies: Record<string, RateLimitPolicy> = RATE_LIMIT_POLICIES,
   rules: RateLimitRule[] = RATE_LIMIT_RULES,
   exemptions: RouteMatcher[] = RATE_LIMIT_EXEMPTIONS
 ): RouteClassification {
   const methods = Array.isArray(routeOptions.method) ? routeOptions.method : [routeOptions.method];
   const hasAuthGuard = routeHasAuthGuard(routeOptions);
+  const hasServiceGuard = routeHasServiceGuard(routeOptions);
   const classes = methods.map((m) =>
-    classifyMethod(m.toUpperCase(), routeOptions.url, hasAuthGuard, rules, exemptions)
+    classifyMethod(
+      m.toUpperCase(),
+      routeOptions.url,
+      hasAuthGuard,
+      hasServiceGuard,
+      rules,
+      exemptions
+    )
   );
 
-  const limited = classes.filter((c): c is RateLimitClass => c !== 'exempt');
+  const limited = classes.filter((c): c is RateLimitClass | 'internal' => c !== 'exempt');
   if (limited.length === 0) return 'exempt';
 
-  const rate = (c: RateLimitClass) => policies[c].max / policies[c].timeWindowMs;
+  const rate = (c: RateLimitClass | 'internal') => {
+    const policy =
+      c === 'internal'
+        ? {
+            max: config.RATE_LIMIT_INTERNAL_MAX,
+            timeWindowMs: config.RATE_LIMIT_INTERNAL_WINDOW_MS,
+          }
+        : (policies[c] ?? RATE_LIMIT_POLICIES[c]);
+    return policy.max / policy.timeWindowMs;
+  };
   return limited.reduce((strictest, c) => (rate(c) < rate(strictest) ? c : strictest));
 }
 
@@ -100,6 +125,12 @@ export function classifyRoute(
  * auth check, including revocation, still runs in authMiddleware.
  */
 export function resolveClientKey(request: FastifyRequest): string {
+  if (request.service?.id) return `service:${request.service.id}`;
+  const internalKey = request.headers['x-internal-api-key'];
+  if (typeof internalKey === 'string' && internalKey.length > 0) {
+    // The limiter runs before preHandler; hash only for a stable bucket.
+    return `service-key:${createHash('sha256').update(internalKey).digest('hex')}`;
+  }
   if (request.user?.userId) return `user:${request.user.userId}`;
 
   const header = request.headers.authorization;
@@ -133,7 +164,13 @@ function buildRoutePolicy(routeClass: RateLimitClass, policy: RateLimitPolicy): 
       }),
     onExceeded: (request, key) => {
       logger.warn(
-        { key, policy: routeClass, method: request.method, url: request.url, requestId: request.id },
+        {
+          key,
+          policy: routeClass,
+          method: request.method,
+          url: request.url,
+          requestId: request.id,
+        },
         'Rate limit exceeded'
       );
     },
@@ -153,8 +190,15 @@ export async function registerRateLimiting(
   const store = options.store ?? RATE_LIMIT_STORE;
 
   const routePolicies = Object.fromEntries(
-    (Object.keys(policies) as RateLimitClass[]).map((c) => [c, buildRoutePolicy(c, policies[c])])
+    (Object.keys(RATE_LIMIT_POLICIES) as RateLimitClass[]).map((c) => [
+      c,
+      buildRoutePolicy(c, policies[c] ?? RATE_LIMIT_POLICIES[c]),
+    ])
   ) as Record<RateLimitClass, RateLimitOptions>;
+  const internalPolicy = buildRoutePolicy('internal' as RateLimitClass, {
+    max: config.RATE_LIMIT_INTERNAL_MAX,
+    timeWindowMs: config.RATE_LIMIT_INTERNAL_WINDOW_MS,
+  });
 
   // Must be added before @fastify/rate-limit registers its own onRoute hook,
   // which reads `config.rateLimit`; onRoute hooks run in registration order.
@@ -167,9 +211,21 @@ export async function registerRateLimiting(
     }
 
     const routeClass = classifyRoute(routeOptions, policies, rules, exemptions);
+    const authOverride = routeOptions.url === '/api/v1/auth/login'
+      ? 'authLogin'
+      : routeOptions.url === '/api/v1/auth/register'
+        ? 'authRegister'
+        : ['/api/v1/auth/password-reset', '/api/v1/auth/password-reset/confirm'].includes(routeOptions.url)
+          ? 'authRecovery'
+          : routeClass;
     routeOptions.config = {
       ...routeOptions.config,
-      rateLimit: routeClass === 'exempt' ? false : routePolicies[routeClass],
+      rateLimit:
+        routeClass === 'exempt'
+          ? false
+          : routeClass === 'internal'
+            ? internalPolicy
+            : routePolicies[routeClass],
     };
   });
 

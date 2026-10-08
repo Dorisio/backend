@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Dorisio operations
+    orgId: 1
+    folder: Dorisio
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

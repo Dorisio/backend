@@ -191,7 +191,9 @@ curl -X POST http://localhost:3000/api/v1/wallet/nonce \
 
 ## API Documentation
 
-See [API.md](./API.md) for endpoint documentation.
+See the OpenAPI routes registered in `src/config/swagger.ts` for endpoint
+documentation. When the server is running, use the Swagger UI exposed by the
+application rather than relying on a stale checked-in API document.
 
 ## Troubleshooting
 

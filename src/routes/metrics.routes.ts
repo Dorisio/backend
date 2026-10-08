@@ -4,6 +4,8 @@ import { getMetricsText, updateMetrics } from '../lib/metrics';
 import { getPoolMetrics, getCircuitBreaker } from '../db';
 import { getPrismaPerformanceMonitor } from '../db/prisma-performance';
 import { getCircuitBreakerSnapshots, syncCircuitBreakerMetrics } from '../lib/circuit-breaker';
+import { registerRequestMetrics } from '../plugins/requestMetrics';
+import { registerRequestMetricsRoutes } from './requestMetrics.routes';
 
 export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient): void => {
   // GET /metrics - Prometheus metrics endpoint
@@ -102,4 +104,10 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
       }
     }
   );
+
+  // Request logging + metrics collection (#54): the hook records every
+  // non-probe request into the in-process store (and the Prometheus
+  // histogram), and the admin routes expose the aggregated dashboard views.
+  registerRequestMetrics(app);
+  registerRequestMetricsRoutes(app);
 };

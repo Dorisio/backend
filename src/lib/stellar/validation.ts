@@ -42,6 +42,13 @@ export function isValidAssetCode(value: unknown): boolean {
   return typeof value === 'string' && /^[A-Za-z0-9]{1,12}$/.test(value);
 }
 
+/** Validates a complete Stellar asset configuration, including native XLM. */
+export function isValidAssetConfiguration(code: unknown, issuer?: unknown): boolean {
+  if (!isValidAssetCode(code)) return false;
+  if (String(code).toUpperCase() === 'XLM') return issuer === undefined || issuer === null || issuer === '';
+  return isValidStellarPublicKey(issuer);
+}
+
 export interface MemoValidationResult {
   valid: boolean;
   length: number;

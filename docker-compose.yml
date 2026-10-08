@@ -6,7 +6,7 @@ services:
     container_name: dorisio-postgres
     environment:
       POSTGRES_USER: dorisio
-      POSTGRES_PASSWORD: dorisio_dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your untracked .env file}
       POSTGRES_DB: dorisio
     ports:
       - '5432:5432'
@@ -38,11 +38,11 @@ services:
     container_name: dorisio-backend
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgresql://dorisio:dorisio_dev_password@postgres:5432/dorisio
+      DATABASE_URL: postgresql://dorisio:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in your untracked .env file}@postgres:5432/dorisio
       REDIS_URL: redis://redis:6379
       PORT: 3000
       LOG_LEVEL: debug
-      JWT_SECRET: dev-secret-key-change-in-production
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your untracked .env file}
       STELLAR_NETWORK: testnet
       STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
       STELLAR_SERVER_SECRET_KEY: ${STELLAR_SERVER_SECRET_KEY}
@@ -62,9 +62,92 @@ services:
     networks:
       - dorisio-network
 
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ['monitoring']
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - backend
+      - node-exporter
+      - postgres-exporter
+    networks:
+      - dorisio-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: ['monitoring']
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --config.expand-env
+    environment:
+      ALERTMANAGER_SLACK_WEBHOOK_URL: ${ALERTMANAGER_SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/T00000000/B00000000/replace-me}
+      PAGERDUTY_ROUTING_KEY: ${PAGERDUTY_ROUTING_KEY:-replace-with-pagerduty-routing-key}
+    ports:
+      - '9093:9093'
+    volumes:
+      - ./infra/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - dorisio-network
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: ['monitoring']
+    ports:
+      - '3001:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-this-local-password}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - dorisio-network
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    profiles: ['monitoring']
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    networks:
+      - dorisio-network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    profiles: ['monitoring']
+    environment:
+      DATA_SOURCE_NAME: ${PG_EXPORTER_DATA_SOURCE_NAME:-postgresql://dorisio:${POSTGRES_PASSWORD:-dorisio_dev_password}@postgres:5432/dorisio?sslmode=disable}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dorisio-network
+
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   dorisio-network:

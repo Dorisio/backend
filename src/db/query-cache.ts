@@ -315,3 +315,10 @@ export class QueryCache {
     }
   }
 }
+
+/**
+ * Shared process-wide query cache (used by AnalyticsService and the
+ * instrumentation layer). Tag-based invalidation keeps related entries
+ * consistent across models.
+ */
+export const queryCache = new QueryCache();

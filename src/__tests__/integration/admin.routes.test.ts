@@ -6,7 +6,7 @@ import { registerAdminRoutes } from '../../domains/admin/admin.routes';
 // ── auth middleware mock ──────────────────────────────────────────────────────
 // Intercept authMiddleware so tests control request.user without real JWTs.
 // requireAdmin calls requireRole which calls authMiddleware internally.
-const authMiddlewareMock = vi.fn();
+const authMiddlewareMock = vi.hoisted(() => vi.fn());
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: authMiddlewareMock,
 }));
@@ -55,12 +55,6 @@ function setUser(role: string) {
   authMiddlewareMock.mockImplementation(async (request: { user?: unknown }) => {
     request.user = { userId: 'u-1', email: 'test@example.com', role };
   });
-}
-
-function setUnauthenticated() {
-  authMiddlewareMock.mockRejectedValue(
-    Object.assign(new Error('Unauthorized'), { code: 'UNAUTHORIZED' }),
-  );
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

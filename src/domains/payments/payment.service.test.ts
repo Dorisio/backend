@@ -1,3 +1,9 @@
+import type { PrismaClient } from '@prisma/client';
+vi.mock('../webhooks/webhook.service', () => ({
+  WebhookService: vi.fn(() => ({ dispatchEvent: publish })),
+}));
+const { publish } = vi.hoisted(() => ({ publish: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../lib/queue', () => ({ stellarConfirmationQueue: { add: vi.fn() } }));
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PaymentService } from './payment.service';
 import { ValidationError, NotFoundError } from '../../utils/errors';
@@ -12,6 +18,9 @@ const mockPrisma = {
     findUnique: vi.fn(),
   },
   wallet: {
+    findFirst: vi.fn(),
+  },
+  stellarAsset: {
     findFirst: vi.fn(),
   },
   walletFlag: {
@@ -35,8 +44,17 @@ describe('PaymentService', () => {
   let paymentService: PaymentService;
 
   beforeEach(() => {
-    paymentService = new PaymentService(mockPrisma as any);
+    paymentService = new PaymentService(mockPrisma as unknown as PrismaClient);
     vi.clearAllMocks();
+
+    mockPrisma.stellarAsset.findFirst.mockResolvedValue({
+      id: 'asset-usdc',
+      code: 'USDC',
+      issuer: 'GUSDCISSUER',
+      decimals: 7,
+      enabled: true,
+      priority: 100,
+    });
   });
 
   describe('createTip', () => {
@@ -81,6 +99,12 @@ describe('PaymentService', () => {
         message: 'Great content!',
       });
 
+      expect(publish).toHaveBeenCalledWith(
+        creatorId,
+        'tip-123',
+        'tip.created',
+        expect.objectContaining({ amount: 100 })
+      );
       expect(result.id).toBe('tip-123');
       expect(result.amount).toBe(100);
       expect(result.status).toBe('pending');
@@ -168,9 +192,9 @@ describe('PaymentService', () => {
       });
       mockPrisma.walletFlag.findFirst.mockResolvedValue({ id: 'flag-1' });
 
-      await expect(
-        paymentService.createTip(userId, { creatorId, amount: 50 })
-      ).rejects.toThrow(ValidationError);
+      await expect(paymentService.createTip(userId, { creatorId, amount: 50 })).rejects.toThrow(
+        ValidationError
+      );
       expect(mockPrisma.tip.create).not.toHaveBeenCalled();
     });
 
@@ -227,9 +251,9 @@ describe('PaymentService', () => {
       mockPrisma.walletFlag.findFirst.mockResolvedValue(null);
       mockPrisma.accountFreeze.findFirst.mockResolvedValue({ id: 'freeze-1' });
 
-      await expect(
-        paymentService.createTip(userId, { creatorId, amount: 100 })
-      ).rejects.toThrow(ValidationError);
+      await expect(paymentService.createTip(userId, { creatorId, amount: 100 })).rejects.toThrow(
+        ValidationError
+      );
       expect(mockPrisma.tip.create).not.toHaveBeenCalled();
     });
 
@@ -297,8 +321,34 @@ describe('PaymentService', () => {
           message: true,
           status: true,
           transactionHash: true,
+          assetCode: true,
+          assetIssuer: true,
+          assetDecimals: true,
+          moderationState: true,
           createdAt: true,
           updatedAt: true,
+          media: {
+            where: { status: 'ready' },
+            orderBy: { attachedAt: 'asc' },
+            select: {
+              id: true,
+              kind: true,
+              status: true,
+              mimeType: true,
+              fileName: true,
+              sizeBytes: true,
+              width: true,
+              height: true,
+              durationSeconds: true,
+              storageKey: true,
+              derivatives: true,
+              processingStatus: true,
+              processingError: true,
+              tipId: true,
+              attachedAt: true,
+              createdAt: true,
+            },
+          },
         },
       });
     });
@@ -352,7 +402,11 @@ describe('PaymentService', () => {
       expect(result.hasPrev).toBe(false);
       expect(mockPrisma.tip.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { creatorId, status: 'completed' },
+          where: {
+            creatorId,
+            status: 'completed',
+            moderationState: 'visible',
+          },
           skip: 0,
           take: 20,
         })

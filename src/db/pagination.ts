@@ -7,11 +7,9 @@ import {
   sanitizePageSize,
   sanitizePageNumber,
   parseSortParameters,
-  encodeCursor,
   decodeCursor,
   formatOffsetPaginatedResult,
   formatCursorPaginatedResult,
-  SortField,
 } from '../utils/pagination';
 
 export interface PrismaPaginationOptions {

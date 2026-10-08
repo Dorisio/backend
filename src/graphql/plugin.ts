@@ -4,6 +4,7 @@ import depthLimit from 'graphql-depth-limit';
 import type { PrismaClient } from '@prisma/client';
 import { config } from '../config/env';
 import { verifyToken } from '../utils/jwt';
+import { isTokenBlacklisted, isUserAuthVersionCurrent } from '../utils/token-blacklist';
 import { typeDefs } from './schema';
 import { resolvers } from './resolvers';
 import { logger } from '../utils/logger';
@@ -24,12 +25,19 @@ export async function registerGraphQL(app: FastifyInstance, prisma: PrismaClient
     resolvers,
     graphiql: config.NODE_ENV !== 'production',
     path: '/graphql',
-    context: (request) => {
+    context: async (request) => {
       let user: { userId: string; email: string; role: string } | undefined;
       const auth = request.headers.authorization;
       if (auth?.startsWith('Bearer ')) {
         try {
-          user = verifyToken(auth.slice(7));
+          const token = auth.slice(7);
+          const payload = verifyToken(token);
+          if (
+            !(await isTokenBlacklisted(token)) &&
+            (await isUserAuthVersionCurrent(payload.userId, payload.authVersion ?? 0))
+          ) {
+            user = payload;
+          }
         } catch {
           user = undefined;
         }

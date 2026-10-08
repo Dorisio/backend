@@ -1,0 +1,26 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }, "id": 1, "targets": [{ "expr": "sum(rate(dorisio_request_duration_seconds_count[5m]))", "legendFormat": "requests/sec", "refId": "A" }], "title": "Request rate", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }, "id": 2, "targets": [{ "expr": "sum(rate(dorisio_request_duration_seconds_count{status=~\"5..\"}[5m])) / clamp_min(sum(rate(dorisio_request_duration_seconds_count[5m])), 1)", "legendFormat": "5xx ratio", "refId": "A" }], "title": "HTTP error rate", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }, "id": 3, "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(dorisio_request_duration_seconds_bucket[5m])))", "legendFormat": "p95", "refId": "A" }, { "expr": "histogram_quantile(0.99, sum by (le) (rate(dorisio_request_duration_seconds_bucket[5m])))", "legendFormat": "p99", "refId": "B" }], "title": "Request latency", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }, "id": 4, "targets": [{ "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "{{instance}}", "refId": "A" }], "title": "Host CPU utilization", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }, "id": 5, "targets": [{ "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "{{instance}}", "refId": "A" }], "title": "Host memory utilization", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }, "id": 6, "targets": [{ "expr": "100 * (1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs\"})", "legendFormat": "{{mountpoint}}", "refId": "A" }], "title": "Filesystem utilization", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 }, "id": 7, "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(dorisio_prisma_query_duration_seconds_bucket[5m])))", "legendFormat": "Prisma p95", "refId": "A" }, { "expr": "histogram_quantile(0.95, sum by (le) (rate(dorisio_db_query_duration_seconds_pool_bucket[5m])))", "legendFormat": "pool p95", "refId": "B" }], "title": "Database query latency p95", "type": "timeseries" },
+    { "datasource": { "type": "prometheus", "uid": "dorisio-prometheus" }, "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }, "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 }, "id": 8, "targets": [{ "expr": "pg_stat_database_numbackends", "legendFormat": "{{datname}} active connections", "refId": "A" }, { "expr": "dorisio_db_pool_waiting_clients", "legendFormat": "application waiters", "refId": "B" }], "title": "Database connections and pool pressure", "type": "timeseries" }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["dorisio", "operations", "prometheus"],
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Dorisio Operations Overview",
+  "uid": "dorisio-operations-overview",
+  "version": 1
+}

@@ -3,14 +3,18 @@ import { logger } from '../utils/logger';
 import { config } from '../config';
 import { MigrationRunner } from './migrations';
 import { defaultMigrations } from './migrationDefinitions';
+import { buildDatabaseSslConfig } from './connection';
 
 const args = new Set(process.argv.slice(2));
 const dryRun = args.has('--dry-run');
 const rollback = args.has('--down');
-const targetVersion = Array.from(args).find((arg) => arg.startsWith('--to='))?.split('=')[1];
+const targetVersion = Array.from(args)
+  .find((arg) => arg.startsWith('--to='))
+  ?.split('=')[1];
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ?? config.DATABASE_URL,
+  ssl: buildDatabaseSslConfig(),
 });
 
 const runner = new MigrationRunner(pool, defaultMigrations);

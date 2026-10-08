@@ -18,7 +18,7 @@ describe('database migration framework', () => {
   const createPool = () => {
     const queries: string[] = [];
     const pool = {
-      query: vi.fn(async (sql: string | { text: string }, params?: any[]) => {
+      query: vi.fn(async (sql: string | { text: string }, _params?: any[]) => {
         const sqlText = typeof sql === 'string' ? sql : sql.text;
         queries.push(sqlText);
         if (sqlText.toLowerCase().includes('select * from _prisma_migrations')) {

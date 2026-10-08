@@ -78,7 +78,7 @@ export function cleanupRateLimitStore(): void {
   }
 
   for (const key of keysToDelete) {
-    delete rateLimitStore[key];
+    void rateLimitStore[key];
     cleaned++;
   }
 

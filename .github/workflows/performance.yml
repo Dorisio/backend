@@ -1,0 +1,39 @@
+name: Performance baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: URL to a safe health/readiness endpoint
+        required: true
+        type: string
+      duration_ms:
+        description: Duration for each concurrency level
+        required: false
+        default: '10000'
+        type: string
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+      - name: Run 100/1,000/10,000-user baseline
+        env:
+          LOAD_TEST_URL: ${{ inputs.target_url }}
+          LOAD_TEST_DURATION_MS: ${{ inputs.duration_ms }}
+          LOAD_TEST_CONCURRENCY: 100,1000,10000
+          LOAD_TEST_OUTPUT: artifacts/load-test.json
+        run: mkdir -p artifacts && pnpm load-test:ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-baseline
+          path: artifacts/load-test.json

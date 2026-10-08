@@ -12,14 +12,15 @@ export interface CacheConfig {
 }
 
 export const cacheConfig: CacheConfig = {
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  db: parseInt(process.env.REDIS_DB || '0', 10),
+  host: config.REDIS_HOST || '127.0.0.1',
+  port: config.REDIS_PORT || 6379,
+  password: config.REDIS_PASSWORD || undefined,
+  db: config.REDIS_DB || 0,
   keyPrefix: 'app',
   keyVersion: 'v1',
   defaultTtlSeconds: 300,
-  warmupEnabled: process.env.WARMUP_CACHE === 'true',
+  warmupEnabled: config.CACHE_WARMUP_ENABLED || config.WARMUP_CACHE,
   warmupBatchSize: 100,
-  metricsEnabled: process.env.ENABLE_CACHE_METRICS === 'true',
+  metricsEnabled: config.CACHE_METRICS_ENABLED || config.ENABLE_CACHE_METRICS,
 };
+import { config } from './env';

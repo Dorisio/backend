@@ -7,7 +7,6 @@ import type {
   GenerateNonceRequest,
   VerifyWalletRequest,
   UpdateWalletNameRequest,
-  WalletResponse,
 } from './auth.types';
 import {
   generateWalletNonce,

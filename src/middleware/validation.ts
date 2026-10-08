@@ -33,7 +33,9 @@ export interface ValidationIssue {
 }
 
 export interface RequestValidationErrorDetails {
+  [key: string]: unknown;
   issues: ValidationIssue[];
+  fields: Record<string, string>;
 }
 
 /**
@@ -47,7 +49,10 @@ export class RequestValidationError extends AppError {
   constructor(issues: ValidationIssue[]) {
     super(400, 'VALIDATION_ERROR', 'The request data is invalid');
     this.name = 'RequestValidationError';
-    this.details = { issues };
+    this.details = {
+      issues,
+      fields: Object.fromEntries(issues.map((issue) => [issue.path, issue.message])),
+    };
   }
 }
 

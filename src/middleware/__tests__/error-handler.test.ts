@@ -3,7 +3,6 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { buildErrorResponse, globalErrorHandler, normalizeError, notFoundHandler } from '../error-handler';
 import {
-  AppError,
   ConflictError,
   ErrorCodes,
   ForbiddenError,

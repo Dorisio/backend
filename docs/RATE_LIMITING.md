@@ -1,5 +1,18 @@
 # Rate Limiting
 
+## Issue #51 implementation checklist
+
+The implementation is Redis-capable and applies a policy to every registered
+route through `src/plugins/rateLimit.ts`. Set `RATE_LIMIT_STORE=redis` in
+production so counters survive restarts and are shared by multiple API
+instances; use `memory` only for local single-process development.
+
+Responses expose `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
+`X-RateLimit-Reset`, and `Retry-After`. Rejected requests return HTTP 429 and
+are logged with the client bucket, route, policy, and request ID. Configure
+limits with `RATE_LIMIT_*` environment variables instead of adding ad-hoc
+route middleware.
+
 Every HTTP route is rate limited by a single, centrally configured middleware
 built on [`@fastify/rate-limit`](https://github.com/fastify/fastify-rate-limit).
 Routes never declare their own limits: each route is assigned a **route class**

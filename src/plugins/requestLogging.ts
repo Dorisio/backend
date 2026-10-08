@@ -11,16 +11,20 @@
  * and always echoes the resolved ID back on the response.
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { runWithRequestContext } from '../lib/requestContext';
-
-const REQUEST_ID_HEADER = 'x-request-id';
+import {
+  REQUEST_ID_HEADER,
+  getRequestId,
+  resolveRequestId,
+  runWithRequestContext,
+  setRequestIdResponseHeader,
+} from '../lib/requestContext';
 
 export function registerRequestLogging(app: FastifyInstance): void {
   app.addHook('onRequest', (request: FastifyRequest, reply: FastifyReply, done) => {
-    const incoming = request.headers[REQUEST_ID_HEADER];
-    const requestId = typeof incoming === 'string' && incoming.trim() ? incoming.trim() : randomUUID();
+    const incoming = request.headers[REQUEST_ID_HEADER.toLowerCase()];
+    const requestId = resolveRequestId(incoming, randomUUID);
 
     reply.header(REQUEST_ID_HEADER, requestId);
 
@@ -29,5 +33,11 @@ export function registerRequestLogging(app: FastifyInstance): void {
     // AsyncLocalStorage context here makes it visible to every later
     // hook, the route handler, and anything they call transitively.
     runWithRequestContext({ requestId }, done);
+  });
+
+  // Fastify can produce validation and 404 responses before a route handler;
+  // set the header at send time as well so every response is correlated.
+  app.addHook('onSend', async (request, reply) => {
+    setRequestIdResponseHeader(reply, getRequestId() ?? request.id);
   });
 }

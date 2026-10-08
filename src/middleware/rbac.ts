@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { UserRole, hasAnyRole } from '../utils/roles';
-import { UnauthorizedError } from '../utils/errors';
+import { ForbiddenError } from '../utils/errors';
 import { authMiddleware } from './auth';
 import { registerAuthGuard } from './auth-guards';
 
@@ -9,11 +9,15 @@ export const requireRole = (allowedRoles: UserRole[]) => {
     await authMiddleware(request, reply);
 
     if (!request.user) {
-      throw new UnauthorizedError('User not found');
+      // authMiddleware already rejected unauthenticated requests; reaching
+      // here without a user is a contract violation.
+      throw new ForbiddenError('User not found');
     }
 
+    // Authenticated but not allowed: 403 (Forbidden), not 401 — the user
+    // identified fine, the role is the problem (issue #35).
     if (!hasAnyRole(request.user.role, allowedRoles)) {
-      throw new UnauthorizedError('Insufficient permissions');
+      throw new ForbiddenError('Insufficient permissions');
     }
   });
 };

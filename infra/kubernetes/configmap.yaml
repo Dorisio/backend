@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dorisio-backend-config
+data:
+  NODE_ENV: production
+  PORT: '3000'
+  LOG_LEVEL: info
+  HTTP2_ENABLED: 'false'
+  RATE_LIMIT_STORE: redis
+  JOBS_WORKERS_ENABLED: 'false'

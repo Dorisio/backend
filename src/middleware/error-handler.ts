@@ -5,6 +5,7 @@ import { ApiErrorResponse, formatError } from '../types/response';
 import { logger } from '../utils/logger';
 import { captureError } from '../lib/error-tracking';
 import { DEFAULT_LOCALE, ErrorLocale, getCatalog, resolveLocale, translateError } from '../i18n/errors';
+import { setRequestIdResponseHeader } from '../lib/requestContext';
 
 export interface NormalizedError {
   statusCode: number;
@@ -288,6 +289,7 @@ export async function globalErrorHandler(
   const normalized = normalizeError(error);
   const locale = getRequestLocale(request);
   const body = buildErrorResponse(normalized, { locale });
+  setRequestIdResponseHeader(reply, request.id);
 
   const logPayload = {
     err: normalized.cause ?? error,
@@ -342,5 +344,6 @@ export async function notFoundHandler(
     'Route not found'
   );
 
+  setRequestIdResponseHeader(reply, request.id);
   reply.code(404).send(buildErrorResponse(normalized, { locale }));
 }

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Minimal in-memory stand-in for the Prisma client, covering only the models
  * the payment service touches. Lets tests exercise real idempotency, refund

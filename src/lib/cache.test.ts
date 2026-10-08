@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createClient } from 'redis';
-import { cacheService, CacheService } from './cache';
-import { cacheConfig } from '../config/cache';
+import { CacheService } from './cache';
 
 // These tests exercise real Redis behaviour. Skip them when no Redis server
 // is reachable (e.g. CI jobs that only provision a database), matching the

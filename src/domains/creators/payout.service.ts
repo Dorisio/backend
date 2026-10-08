@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger';
 import { getStellarClient } from '../../lib/stellar/client';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
+import { invalidateCaches, earningsCacheKey, creatorCacheKeys } from '../../lib/cache/invalidation';
 
 export class PayoutService extends BaseService {
   constructor(private prisma: PrismaClient) {
@@ -171,6 +172,10 @@ export class PayoutService extends BaseService {
         });
 
         logger.info(`Payout completed for creator ${payout.creatorId}: ${payout.amount} XLM`);
+        await invalidateCaches(
+          [earningsCacheKey(payout.creatorId), ...creatorCacheKeys(payout.creatorId)],
+          'payout.executed'
+        );
 
         // Dispatch webhook event
         await this.dispatchPayoutWebhook(payout, result.id);

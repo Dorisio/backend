@@ -1,0 +1,105 @@
+groups:
+  - name: dorisio-availability
+    rules:
+      - alert: DorisioBackendTargetMissing
+        expr: up{job="dorisio-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: dorisio-backend
+        annotations:
+          summary: Dorisio backend metrics endpoint is unavailable
+          description: Prometheus has been unable to scrape /metrics for two minutes.
+          runbook_url: https://github.com/Dorisio/backend/blob/main/docs/INCIDENT_RESPONSE.md
+
+      - alert: DorisioHighHttpErrorRate
+        expr: |
+          (
+            sum(rate(dorisio_request_duration_seconds_count{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(dorisio_request_duration_seconds_count[5m])), 1)
+          ) > 0.05
+          and sum(rate(dorisio_request_duration_seconds_count[5m])) > 0.2
+        for: 10m
+        labels:
+          severity: critical
+          service: dorisio-backend
+        annotations:
+          summary: HTTP 5xx rate is above 5%
+          description: More than 5% of requests failed for 10 minutes, with sufficient request volume.
+          runbook_url: https://github.com/Dorisio/backend/blob/main/docs/INCIDENT_RESPONSE.md
+
+      - alert: DorisioHighRequestLatency
+        expr: histogram_quantile(0.99, sum by (le) (rate(dorisio_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: dorisio-backend
+        annotations:
+          summary: Backend p99 request latency exceeds two seconds
+          description: The five-minute p99 request latency has exceeded two seconds for 10 minutes.
+          runbook_url: https://github.com/Dorisio/backend/blob/main/docs/INCIDENT_RESPONSE.md
+
+      - alert: DorisioDatabasePoolWaiting
+        expr: dorisio_db_pool_waiting_clients > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: dorisio-backend
+        annotations:
+          summary: Requests are waiting for a database connection
+          description: Check pool sizing, database availability, and slow-query metrics.
+          runbook_url: https://github.com/Dorisio/backend/blob/main/docs/runbooks/database.md
+
+      - alert: DorisioPostgresExporterMissing
+        expr: up{job="postgres"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: PostgreSQL metrics exporter is unavailable
+          description: Prometheus cannot scrape database health and transaction metrics.
+          runbook_url: https://github.com/Dorisio/backend/blob/main/docs/runbooks/database.md
+
+  - name: dorisio-host-capacity
+    rules:
+      - alert: HostCpuPressure
+        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 85
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host CPU utilization is above 85%
+          description: Sustained CPU pressure may affect API latency.
+
+      - alert: HostMemoryPressure
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 90
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host memory utilization is above 90%
+          description: Check process memory and capacity before the host runs out of memory.
+
+      - alert: HostFilesystemLowSpace
+        expr: 100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) > 85
+        for: 15m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host filesystem is more than 85% full
+          description: Free or expand disk space before database or application writes fail.
+
+      - alert: HostNetworkErrors
+        expr: increase(node_network_receive_errs_total[10m]) + increase(node_network_transmit_errs_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host network interface errors were observed
+          description: Inspect host interface counters and network device health.

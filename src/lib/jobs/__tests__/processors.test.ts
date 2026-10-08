@@ -29,11 +29,18 @@ describe('email processor', () => {
 
   it('opens the circuit breaker when the provider keeps failing', async () => {
     const transport = vi.fn().mockRejectedValue(new Error('smtp down'));
-    const breaker = new CircuitBreaker({ name: 'email-breaker', failureThreshold: 1 });
+    // Rolling-window breaker: minRequests/volumeThreshold 1 makes the very
+    // first failure reach the rate threshold (100% > 50%).
+    const breaker = new CircuitBreaker({
+      name: 'email-breaker',
+      failureThreshold: 0.5,
+      minRequests: 1,
+      volumeThreshold: 1,
+    });
     const processor = createEmailProcessor({ emailTransport: transport, emailBreaker: breaker });
 
     await expect(processor({ to: 'a@b.com', subject: 'Hi' })).rejects.toThrow('smtp down');
-    expect(breaker.getState()).toBe('OPEN');
+    expect(breaker.currentState).toBe('OPEN');
 
     await expect(processor({ to: 'a@b.com', subject: 'Hi' })).rejects.toBeInstanceOf(
       CircuitBreakerOpenError

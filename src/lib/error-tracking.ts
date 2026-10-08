@@ -3,6 +3,7 @@ import { Counter } from 'prom-client';
 import { randomUUID } from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { requestIdHeaders } from './requestContext';
 
 /**
  * Lightweight, dependency-conscious error tracking.
@@ -164,6 +165,7 @@ export const sentryTransport: ErrorTransport = async (error, dsn) => {
         headers: {
           'Content-Type': 'application/json',
           'X-Sentry-Auth': authHeader,
+          ...requestIdHeaders(error.context.requestId),
         },
         timeout: config.ERROR_TRACKING_TIMEOUT_MS,
       }

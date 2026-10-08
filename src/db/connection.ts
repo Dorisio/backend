@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { Pool, PoolClient, PoolConfig, QueryResult, QueryResultRow } from 'pg';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -6,9 +8,10 @@ import {
   CircuitBreakerState,
   CircuitBreakerMetrics,
 } from './circuit-breaker';
-import { QueryLogger, QueryLogOptions } from './query-logger';
+import { QueryLogger } from './query-logger';
 import { QueryCache, isReadOnlyQuery } from './query-cache';
 import { PreparedStatementConfig } from './query-optimizer';
+import { getReadReplicaManager } from './read-replicas';
 import {
   dbPoolTotalConnections,
   dbPoolIdleConnections,
@@ -47,6 +50,8 @@ export interface QueryOptions {
   cacheTtlMs?: number;
   cacheTags?: string[];
   bypassCircuitBreaker?: boolean;
+  /** Route eligible read-only SQL to a healthy replica when enabled. */
+  readReplica?: boolean;
 }
 
 export interface CustomDatabaseConfig {
@@ -63,6 +68,7 @@ export interface CustomDatabaseConfig {
   circuitBreakerResetMs?: number;
   queryCacheTtlMs?: number;
   queryCacheMaxEntries?: number;
+  ssl?: PoolConfig['ssl'];
 }
 
 interface ActiveCheckout {
@@ -79,6 +85,32 @@ let queryCache: QueryCache | null = null;
 
 const activeCheckouts = new Map<PoolClient, ActiveCheckout>();
 let leakDetectionTimeoutMs = 30000;
+
+function readCertificate(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return existsSync(value) ? readFileSync(value, 'utf8') : value;
+}
+
+/**
+ * Build the pg TLS option from validated configuration. Certificate values may
+ * be PEM strings or paths mounted by Kubernetes/ a secrets manager.
+ */
+export function buildDatabaseSslConfig(): PoolConfig['ssl'] {
+  const mode = config.DB_SSL_MODE;
+  if (mode === 'disable') return undefined;
+
+  const rejectUnauthorized =
+    mode === 'verify-ca' || mode === 'verify-full' ? true : config.DB_SSL_REJECT_UNAUTHORIZED;
+  const ssl: NonNullable<PoolConfig['ssl']> = { rejectUnauthorized };
+  const ca = readCertificate(config.DB_SSL_CA);
+  const cert = readCertificate(config.DB_SSL_CERT);
+  const key = readCertificate(config.DB_SSL_KEY);
+  if (ca) ssl.ca = ca;
+  if (cert) ssl.cert = cert;
+  if (key) ssl.key = key;
+  if (config.DB_SSL_SERVERNAME) ssl.servername = config.DB_SSL_SERVERNAME;
+  return ssl;
+}
 
 function updateCircuitBreakerMetric(state: CircuitBreakerState): void {
   const stateVal = state === 'CLOSED' ? 0 : state === 'HALF_OPEN' ? 1 : 2;
@@ -126,18 +158,15 @@ export const initializeDatabase = async (
   const poolMax = customConfig.max ?? config.DB_POOL_MAX ?? 20;
   const connectionTimeout =
     customConfig.connectionTimeoutMillis ?? config.DB_CONNECTION_TIMEOUT_MS ?? 5000;
-  const idleTimeout =
-    customConfig.idleTimeoutMillis ?? config.DB_IDLE_TIMEOUT_MS ?? 30000;
+  const idleTimeout = customConfig.idleTimeoutMillis ?? config.DB_IDLE_TIMEOUT_MS ?? 30000;
   const statementTimeout =
     customConfig.statementTimeoutMs ?? config.DB_STATEMENT_TIMEOUT_MS ?? 10000;
   const slowThreshold =
     customConfig.slowQueryThresholdMs ?? config.DB_SLOW_QUERY_THRESHOLD_MS ?? 200;
-  const logQueries =
-    customConfig.logQueries ?? config.DB_LOG_QUERIES ?? false;
+  const logQueries = customConfig.logQueries ?? config.DB_LOG_QUERIES ?? false;
   leakDetectionTimeoutMs =
     customConfig.leakDetectionTimeoutMs ?? config.DB_LEAK_DETECTION_TIMEOUT_MS ?? 30000;
-  const cbFailures =
-    customConfig.circuitBreakerFailures ?? config.DB_CIRCUIT_BREAKER_FAILURES ?? 5;
+  const cbFailures = customConfig.circuitBreakerFailures ?? config.DB_CIRCUIT_BREAKER_FAILURES ?? 5;
   const cbResetMs =
     customConfig.circuitBreakerResetMs ?? config.DB_CIRCUIT_BREAKER_RESET_MS ?? 10000;
 
@@ -172,13 +201,14 @@ export const initializeDatabase = async (
     idleTimeoutMillis: idleTimeout,
     connectionTimeoutMillis: connectionTimeout,
     statement_timeout: statementTimeout,
+    ssl: customConfig.ssl ?? buildDatabaseSslConfig(),
   };
 
   try {
     pool = new Pool(poolConfig);
 
     // Event listeners on pool
-    pool.on('error', (err: Error, client: PoolClient) => {
+    pool.on('error', (err: Error, _client: PoolClient) => {
       logger.error({ err }, 'Unexpected error on idle database client');
       dbQueryErrorsCounter.inc({ error_code: 'IDLE_CLIENT_ERROR' });
       // Client is automatically discarded by pg.Pool upon error event
@@ -311,7 +341,7 @@ export const query = async <R extends QueryResultRow = any>(
 
   const isPreparedStatement = typeof textOrConfig !== 'string';
   const sql = isPreparedStatement ? textOrConfig.text : textOrConfig;
-  const queryParams = isPreparedStatement ? textOrConfig.values ?? params : params;
+  const queryParams = isPreparedStatement ? (textOrConfig.values ?? params) : params;
   const queryName = options.queryName ?? (isPreparedStatement ? textOrConfig.name : undefined);
   const slowThresholdMs = qLogger.getSlowQueryThreshold();
 
@@ -320,6 +350,9 @@ export const query = async <R extends QueryResultRow = any>(
   const cacheKey = cacheAllowed ? qCache.generateKey(sql, queryParams) : null;
 
   const executeAction = async (): Promise<QueryResult<R>> => {
+    if (options.readReplica && isReadOnlyQuery(sql)) {
+      return getReadReplicaManager().query<R>(sql, queryParams);
+    }
     if (isPreparedStatement) {
       return currentPool.query<R>({
         name: textOrConfig.name,
@@ -436,9 +469,7 @@ export const executePreparedStatement = async <R extends QueryResultRow = any>(
 /**
  * Checkout a client from the pool with automatic release guarantee in finally.
  */
-export const withClient = async <T>(
-  callback: (client: PoolClient) => Promise<T>
-): Promise<T> => {
+export const withClient = async <T>(callback: (client: PoolClient) => Promise<T>): Promise<T> => {
   const currentPool = getDatabase();
   const client = await currentPool.connect();
 

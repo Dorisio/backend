@@ -1,0 +1,45 @@
+name: Backup verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+
+      - name: Verify latest encrypted backup and restore data checks
+        run: pnpm verify-backup
+        env:
+          NODE_ENV: test
+          BACKUP_VERIFICATION_ENABLED: 'true'
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+          BACKUP_DIRECTORY: ${{ secrets.BACKUP_DIRECTORY }}
+          BACKUP_SECONDARY_DIRECTORY: ${{ secrets.BACKUP_SECONDARY_DIRECTORY }}
+          BACKUP_VERIFICATION_HISTORY_PATH: quality-reports/backup-verification.jsonl
+
+      - name: Upload verification history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-history
+          path: quality-reports/backup-verification.jsonl
+          if-no-files-found: ignore

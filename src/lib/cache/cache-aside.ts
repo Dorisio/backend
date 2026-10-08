@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger';
 
 /**
  * Cache-aside pattern wrapper
- * 
+ *
  * This implements the cache-aside pattern where:
  * 1. Application looks up cache first
  * 2. If cache miss, query database
@@ -22,9 +22,13 @@ export interface CacheAsideOptions<T> {
   skipCache?: boolean;
 }
 
+// One in-flight load per key per process. Distributed locks remain available
+// in CacheService for multi-instance deployments.
+const inFlight = new Map<string, Promise<unknown>>();
+
 /**
  * Get data with cache-aside pattern
- * 
+ *
  * @param options - Cache configuration and fetch function
  * @returns Cached or freshly fetched data
  */
@@ -45,18 +49,23 @@ export async function getOrFetch<T>(options: CacheAsideOptions<T>): Promise<T> {
       return cached as T;
     }
 
-    // Cache miss - fetch from source
     logger.debug(`Cache miss for key: ${key}, fetching from source`);
-    const data = await fetchFn();
-
-    // Store in cache with appropriate TTL
-    const ttl = ttlMs ?? TTL_CONFIG[type];
-    await cache.set(key, data, ttl);
-
-    return data;
+    const existing = inFlight.get(key) as Promise<T> | undefined;
+    if (existing) return await existing;
+    const load = (async () => {
+      const data = await fetchFn();
+      await cache.set(key, data, ttlMs ?? TTL_CONFIG[type]);
+      return data;
+    })();
+    inFlight.set(key, load);
+    try {
+      return await load;
+    } finally {
+      inFlight.delete(key);
+    }
   } catch (error) {
     logger.error(`Cache-aside error for key: ${key}`, error);
-    
+
     // On cache error, fallback to direct fetch
     try {
       return await fetchFn();
@@ -69,7 +78,7 @@ export async function getOrFetch<T>(options: CacheAsideOptions<T>): Promise<T> {
 
 /**
  * Invalidate cache entry
- * 
+ *
  * @param key - Cache key to invalidate
  */
 export async function invalidate(key: string): Promise<void> {
@@ -83,7 +92,7 @@ export async function invalidate(key: string): Promise<void> {
 
 /**
  * Invalidate multiple cache entries by pattern
- * 
+ *
  * @param pattern - Key pattern to match (e.g., "v1:user:*")
  * Note: This requires Redis SCAN operation, not implemented in basic cache
  */
@@ -95,7 +104,7 @@ export async function invalidatePattern(pattern: string): Promise<void> {
 
 /**
  * Update cache entry with new data
- * 
+ *
  * @param key - Cache key
  * @param data - New data to cache
  * @param type - Cache type for TTL
@@ -118,7 +127,7 @@ export async function update<T>(
 
 /**
  * Create a cache key with proper versioning
- * 
+ *
  * @param type - Cache type
  * @param id - Resource identifier
  * @param version - Cache version (default: v1)
@@ -130,15 +139,13 @@ export function createCacheKey(type: CacheType, id: string, version: string = 'v
 /**
  * Batch cache operations for multiple keys
  */
-export async function batchGetOrFetch<T>(
-  operations: CacheAsideOptions<T>[]
-): Promise<T[]> {
-  return Promise.all(operations.map(op => getOrFetch(op)));
+export async function batchGetOrFetch<T>(operations: CacheAsideOptions<T>[]): Promise<T[]> {
+  return Promise.all(operations.map((op) => getOrFetch(op)));
 }
 
 /**
  * Cache decorator for service methods
- * 
+ *
  * Usage:
  * ```ts
  * class MyService {
@@ -148,26 +155,18 @@ export async function batchGetOrFetch<T>(
  *   }
  * }
  * ```
- * 
+ *
  * Note: This is a simplified version. For full decorator support,
  * consider using a library like cache-manager or implementing
  * a more sophisticated decorator system.
  */
-export function Cacheable(options: {
-  type: CacheType;
-  keyPrefix: string;
-  ttlMs?: number;
-}) {
-  return function (
-    target: any,
-    propertyKey: string,
-    descriptor: PropertyDescriptor
-  ) {
+export function Cacheable(options: { type: CacheType; keyPrefix: string; ttlMs?: number }) {
+  return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
     const originalMethod = descriptor.value;
 
     descriptor.value = async function (...args: any[]) {
       const key = createCacheKey(options.type, `${options.keyPrefix}:${args[0]}`);
-      
+
       return getOrFetch({
         key,
         type: options.type,

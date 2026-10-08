@@ -1,7 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Fastify, { FastifyInstance, FastifyServerOptions, RouteOptions } from 'fastify';
 import jwt from 'jsonwebtoken';
 import { classifyRoute, registerRateLimiting, RateLimitingOptions } from '../rateLimit';
+
+// These tests exercise rate-limit bucketing, not database-backed JWT revocation.
+vi.mock('../../utils/token-blacklist', () => ({
+  isTokenBlacklisted: vi.fn().mockResolvedValue(false),
+  isUserAuthVersionCurrent: vi.fn().mockResolvedValue(true),
+}));
+
 import { authMiddleware } from '../../middleware/auth';
 import { requireAdmin } from '../../middleware/rbac';
 import { globalErrorHandler } from '../../middleware/error-handler';
@@ -310,6 +317,8 @@ describe('route classification', () => {
     expect(classify(route('HEAD', '/readiness'))).toBe('exempt');
     expect(classify(route('OPTIONS', '/*'))).toBe('exempt');
     expect(classify(route('POST', '/api/v1/auth/login'))).toBe('sensitive');
+    expect(classify(route('POST', '/api/v1/auth/password-reset'))).toBe('sensitive');
+    expect(classify(route('POST', '/api/v1/auth/password-reset/confirm'))).toBe('sensitive');
     expect(classify(route('POST', '/api/v1/transactions/tip', { preHandler: [authMiddleware] }))).toBe(
       'sensitive'
     );

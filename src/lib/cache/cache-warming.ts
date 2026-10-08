@@ -11,7 +11,7 @@ import { cacheConfig } from '../../config/cache';
 
 /**
  * Cache warming service
- * 
+ *
  * Preloads frequently accessed data into cache on application startup
  * to reduce cold start latency and improve hit rates.
  */
@@ -54,7 +54,7 @@ export class CacheWarmer {
       const warmPromises = creators.map(async (creator) => {
         const key = createCacheKey(CacheType.CREATOR, creator.id);
         const ttl = TTL_CONFIG[CacheType.CREATOR];
-        
+
         try {
           await cache.set(key, creator, ttl);
           logger.debug(`Warmed cache for creator: ${creator.username} (${creator.id})`);

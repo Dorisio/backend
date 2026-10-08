@@ -51,7 +51,10 @@ export interface ProcessorDependencies {
 export type JobProcessor = (data: unknown, job?: JobRecord) => Promise<unknown>;
 
 export function createEmailProcessor(deps: ProcessorDependencies = {}): JobProcessor {
-  const breaker = deps.emailBreaker ?? getCircuitBreaker('email-provider', { failureThreshold: 5 });
+  // Thresholds come from the centralized config (failure *rate* semantics);
+  // the old hard-coded `failureThreshold: 5` predates the rolling-window
+  // breaker and would never trip under rate semantics.
+  const breaker = deps.emailBreaker ?? getCircuitBreaker('email-provider');
   const transport = deps.emailTransport ?? defaultEmailTransport;
 
   return async (data) => {

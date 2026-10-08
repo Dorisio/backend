@@ -1,8 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { verifyToken } from '../utils/jwt';
 import { UnauthorizedError } from '../utils/errors';
-import { isTokenBlacklisted } from '../utils/token-blacklist';
-import { config } from '../config';
+import { isTokenBlacklisted, isUserAuthVersionCurrent } from '../utils/token-blacklist';
 import { setRequestContextUserId } from '../lib/requestContext';
 import { registerAuthGuard } from './auth-guards';
 
@@ -34,6 +33,9 @@ export const authMiddleware = async (
     }
 
     const payload = verifyToken(token);
+    if (!(await isUserAuthVersionCurrent(payload.userId, payload.authVersion ?? 0))) {
+      throw new UnauthorizedError('Token has been revoked');
+    }
     request.user = payload;
     // So every log line for the rest of this request — including from
     // code that only has access to the module-level `logger`, not
@@ -65,6 +67,9 @@ export const optionalAuthMiddleware = async (
       }
 
       const payload = verifyToken(token);
+      if (!(await isUserAuthVersionCurrent(payload.userId, payload.authVersion ?? 0))) {
+        return;
+      }
       request.user = payload;
     }
   } catch {
