@@ -52,6 +52,23 @@ describe('buildTipWhere', () => {
     ]);
   });
 
+  it('keeps SQL injection attempts as literal Prisma filter values', () => {
+    const attack = "'; DROP TABLE tips; --";
+    const where = buildTipWhere({}, { query: attack });
+
+    expect(where).toEqual({
+      AND: [
+        {
+          OR: [
+            { message: { contains: attack, mode: 'insensitive' } },
+            { id: { equals: attack } },
+            { transactionHash: { equals: attack } },
+          ],
+        },
+      ],
+    });
+  });
+
   it('trims the search term and ignores a blank one', () => {
     expect((buildTipWhere({}, { query: '  coffee  ' }) as any).AND[0].OR[0]).toEqual({
       message: { contains: 'coffee', mode: 'insensitive' },
@@ -216,5 +233,35 @@ describe('PaymentService filtered listings', () => {
     expect(where.status).toBe('failed');
     expect(result.total).toBe(5);
     expect(result.filters).toMatchObject({ status: 'failed' });
+  });
+
+  it('passes SQL-like search input as data alongside allowlisted sorting', async () => {
+    const attack = "'; DROP TABLE tips; --";
+    await paymentService.searchTips(1, 20, {
+      query: attack,
+      sortBy: 'createdAt',
+      sortOrder: 'asc',
+    });
+
+    const query = prisma.tip.findMany.mock.calls[0][0];
+    expect(query.where.AND[0].OR).toEqual([
+      { message: { contains: attack, mode: 'insensitive' } },
+      { id: { equals: attack } },
+      { transactionHash: { equals: attack } },
+    ]);
+    expect(query.orderBy).toEqual([{ createdAt: 'asc' }, { id: 'asc' }]);
+    expect(prisma.tip.count.mock.calls[0][0].where).toEqual(query.where);
+  });
+
+  it('rejects SQL-like sort fields before querying Prisma', async () => {
+    await expect(
+      paymentService.searchTips(1, 20, {
+        query: 'thanks',
+        sortBy: 'createdAt; DROP TABLE tips; --',
+      })
+    ).rejects.toThrow('Invalid sort field');
+
+    expect(prisma.tip.findMany).not.toHaveBeenCalled();
+    expect(prisma.tip.count).not.toHaveBeenCalled();
   });
 });

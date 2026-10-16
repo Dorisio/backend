@@ -18,6 +18,36 @@ APIs) so input is represented as data rather than assembled into SQL.
    schemas before calling a service. Validation is defence in depth; it does
    not replace parameterization.
 
+## Safe Filtering Patterns
+
+Build filters as Prisma objects and pass request values directly as values.
+Prisma parameterizes these fields; quotes, semicolons, and SQL keywords in a
+search term remain data and cannot become SQL syntax.
+
+```ts
+const where: Prisma.TipWhereInput = {
+  AND: [
+    {
+      OR: [
+        { message: { contains: search, mode: 'insensitive' } },
+        { id: { equals: search } },
+        { transactionHash: { equals: search } },
+      ],
+    },
+    ...(status ? [{ status }] : []),
+  ],
+};
+
+const orderBy = [{ createdAt: 'desc' }, { id: 'desc' }];
+const results = await prisma.tip.findMany({ where, orderBy });
+```
+
+Use `AND`/`OR` to compose filters, rather than assembling a `WHERE` string.
+Sort directions and values can be validated, but SQL identifiers cannot be
+parameterized: map requested sort fields through a fixed allowlist before
+building Prisma's `orderBy` object. Never put request input into a raw query or
+use it as a Prisma field name without that allowlist.
+
 The repository's health probe uses one constant tagged query, and the
 migration/query-optimization modules contain reviewed infrastructure queries.
 Those exceptions are intentionally isolated and must not be copied into
