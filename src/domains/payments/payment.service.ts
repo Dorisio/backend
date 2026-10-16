@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { PrismaClient, Tip } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import {
@@ -31,7 +32,8 @@ import { MAX_MEDIA_PER_TIP, type MediaView } from '../media/media.types';
 import { buildCdnUrl } from '../media/media.storage';
 import { TIP_VISIBLE_STATE } from '../moderation/moderation.types';
 import { TipFilterInput, buildTipWhere, describeTipFilters } from './tip-filters';
-import { invalidateCaches, tipCacheKeys } from '../../lib/cache/invalidation';
+import { CacheType, createCacheKey, getOrFetch } from '../../lib/cache/cache-aside';
+import { CACHE_TTLS_MS, invalidateCaches, tipCacheKeys } from '../../lib/cache/invalidation';
 /**
 
  * Columns required to build a TipResponse.
@@ -86,6 +88,13 @@ const TIP_RESPONSE_SELECT = {
 function isUniqueConstraintError(error: unknown): boolean {
   const code = (error as { code?: string })?.code;
   return code === 'P2002';
+}
+
+function cacheFingerprint(options: object): string {
+  const entries = Object.entries(options)
+    .filter(([, value]) => value !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }
 
 /**
@@ -316,6 +325,7 @@ export class PaymentService extends BaseService {
       }
 
       logger.info(`Tip created: ${tip.id} from ${userId} to ${data.creatorId} for ${data.amount}`);
+      await invalidateCaches(tipCacheKeys(tip.id, tip.creatorId, tip.fromUserId), 'tip.created');
       await new WebhookService(this.prisma).dispatchEvent(tip.creatorId, tip.id, 'tip.created', {
         tipId: tip.id,
         amount: tip.amount,
@@ -425,57 +435,63 @@ export class PaymentService extends BaseService {
     filters: Record<string, unknown>;
   }> {
     return this.executeWithLogging('payment.listTips', async () => {
-      // Verify creator exists
-      const creator = await this.prisma.creator.findUnique({
-        where: { id: creatorId },
-      });
-
-      if (!creator) {
-        throw new NotFoundError('Creator');
-      }
-
       // Validate pagination
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, 20);
-
-      // Database-side filtering: public lists exclude tips hidden or removed
-      // by moderation while retaining the existing tip filters.
-      const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, options);
-
-      const sortFields = parseSortParameters(
-        options.sortBy,
-        options.sortOrder,
-        ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
-        'createdAt',
-        'desc'
+      const cacheKey = createCacheKey(
+        CacheType.TIPS,
+        `creator-list:${creatorId}:${safePage}:${safePageSize}:${cacheFingerprint(options)}`
       );
 
-      const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
-      const skip = (safePage - 1) * safePageSize;
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.TIPS,
+        ttlMs: CACHE_TTLS_MS.tips,
+        fetchFn: async () => {
+          const creator = await this.prisma.creator.findUnique({
+            where: { id: creatorId },
+          });
 
-      const [tips, total] = await Promise.all([
-        this.prisma.tip.findMany({
-          where,
-          select: TIP_RESPONSE_SELECT,
-          skip,
-          take: safePageSize,
-          orderBy,
-        }),
-        this.prisma.tip.count({ where }),
-      ]);
+          if (!creator) {
+            throw new NotFoundError('Creator');
+          }
 
-      const totalPages = Math.ceil(total / safePageSize);
+          const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, options);
+          const sortFields = parseSortParameters(
+            options.sortBy,
+            options.sortOrder,
+            ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+            'createdAt',
+            'desc'
+          );
+          const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
+          const skip = (safePage - 1) * safePageSize;
 
-      return {
-        tips: tips.map((tip) => this.formatTipResponse(tip)),
-        total,
-        page: safePage,
-        pageSize: safePageSize,
-        totalPages,
-        hasNext: safePage < totalPages,
-        hasPrev: safePage > 1,
-        filters: describeTipFilters(options),
-      };
+          const [tips, total] = await Promise.all([
+            this.prisma.tip.findMany({
+              where,
+              select: TIP_RESPONSE_SELECT,
+              skip,
+              take: safePageSize,
+              orderBy,
+            }),
+            this.prisma.tip.count({ where }),
+          ]);
+
+          const totalPages = Math.ceil(total / safePageSize);
+
+          return {
+            tips: tips.map((tip) => this.formatTipResponse(tip)),
+            total,
+            page: safePage,
+            pageSize: safePageSize,
+            totalPages,
+            hasNext: safePage < totalPages,
+            hasPrev: safePage > 1,
+            filters: describeTipFilters(options),
+          };
+        },
+      });
     });
   }
 
@@ -493,39 +509,50 @@ export class PaymentService extends BaseService {
     } = {}
   ) {
     return this.executeWithLogging('payment.listTipsCursor', async () => {
-      const creator = await this.prisma.creator.findUnique({
-        where: { id: creatorId },
-      });
-
-      if (!creator) {
-        throw new NotFoundError('Creator');
-      }
-
-      const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, params);
-
-      const result = await paginateWithCursor<Tip>(
-        this.prisma.tip,
-        {
-          limit: params.limit,
-          after: params.after || params.cursor,
-          sortBy: params.sortBy,
-          sortOrder: params.sortOrder,
-        },
-        {
-          where,
-          select: TIP_RESPONSE_SELECT,
-          allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
-          defaultSortField: 'createdAt',
-          defaultSortDirection: 'desc',
-        }
+      const cacheKey = createCacheKey(
+        CacheType.TIPS,
+        `creator-cursor:${creatorId}:${cacheFingerprint(params)}`
       );
 
-      return {
-        ...result,
-        items: result.items.map((tip) => this.formatTipResponse(tip)),
-        data: result.data.map((tip) => this.formatTipResponse(tip)),
-        filters: describeTipFilters(params),
-      };
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.TIPS,
+        ttlMs: CACHE_TTLS_MS.tips,
+        fetchFn: async () => {
+          const creator = await this.prisma.creator.findUnique({
+            where: { id: creatorId },
+          });
+
+          if (!creator) {
+            throw new NotFoundError('Creator');
+          }
+
+          const where = buildTipWhere({ creatorId, ...VISIBLE_TIPS_ONLY }, params);
+          const result = await paginateWithCursor<Tip>(
+            this.prisma.tip,
+            {
+              limit: params.limit,
+              after: params.after || params.cursor,
+              sortBy: params.sortBy,
+              sortOrder: params.sortOrder,
+            },
+            {
+              where,
+              select: TIP_RESPONSE_SELECT,
+              allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+              defaultSortField: 'createdAt',
+              defaultSortDirection: 'desc',
+            }
+          );
+
+          return {
+            ...result,
+            items: result.items.map((tip) => this.formatTipResponse(tip)),
+            data: result.data.map((tip) => this.formatTipResponse(tip)),
+            filters: describeTipFilters(params),
+          };
+        },
+      });
     });
   }
 
@@ -554,43 +581,52 @@ export class PaymentService extends BaseService {
       // Validate pagination
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, 20);
-
-      const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, options);
-
-      const sortFields = parseSortParameters(
-        options.sortBy,
-        options.sortOrder,
-        ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
-        'createdAt',
-        'desc'
+      const cacheKey = createCacheKey(
+        CacheType.TIPS,
+        `user-history:${userId}:${safePage}:${safePageSize}:${cacheFingerprint(options)}`
       );
 
-      const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
-      const skip = (safePage - 1) * safePageSize;
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.TIPS,
+        ttlMs: CACHE_TTLS_MS.tips,
+        fetchFn: async () => {
+          const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, options);
+          const sortFields = parseSortParameters(
+            options.sortBy,
+            options.sortOrder,
+            ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+            'createdAt',
+            'desc'
+          );
+          const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
+          const skip = (safePage - 1) * safePageSize;
 
-      const [tips, total] = await Promise.all([
-        this.prisma.tip.findMany({
-          where,
-          select: TIP_RESPONSE_SELECT,
-          skip,
-          take: safePageSize,
-          orderBy,
-        }),
-        this.prisma.tip.count({ where }),
-      ]);
+          const [tips, total] = await Promise.all([
+            this.prisma.tip.findMany({
+              where,
+              select: TIP_RESPONSE_SELECT,
+              skip,
+              take: safePageSize,
+              orderBy,
+            }),
+            this.prisma.tip.count({ where }),
+          ]);
 
-      const totalPages = Math.ceil(total / safePageSize);
+          const totalPages = Math.ceil(total / safePageSize);
 
-      return {
-        tips: tips.map((tip) => this.formatTipResponse(tip)),
-        total,
-        page: safePage,
-        pageSize: safePageSize,
-        totalPages,
-        hasNext: safePage < totalPages,
-        hasPrev: safePage > 1,
-        filters: describeTipFilters(options),
-      };
+          return {
+            tips: tips.map((tip) => this.formatTipResponse(tip)),
+            total,
+            page: safePage,
+            pageSize: safePageSize,
+            totalPages,
+            hasNext: safePage < totalPages,
+            hasPrev: safePage > 1,
+            filters: describeTipFilters(options),
+          };
+        },
+      });
     });
   }
 
@@ -608,31 +644,42 @@ export class PaymentService extends BaseService {
     } = {}
   ) {
     return this.executeWithLogging('payment.getUserTipHistoryCursor', async () => {
-      const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params);
-
-      const result = await paginateWithCursor<Tip>(
-        this.prisma.tip,
-        {
-          limit: params.limit,
-          after: params.after || params.cursor,
-          sortBy: params.sortBy,
-          sortOrder: params.sortOrder,
-        },
-        {
-          where,
-          select: TIP_RESPONSE_SELECT,
-          allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
-          defaultSortField: 'createdAt',
-          defaultSortDirection: 'desc',
-        }
+      const cacheKey = createCacheKey(
+        CacheType.TIPS,
+        `user-history:${userId}:cursor:${cacheFingerprint(params)}`
       );
 
-      return {
-        ...result,
-        items: result.items.map((tip) => this.formatTipResponse(tip)),
-        data: result.data.map((tip) => this.formatTipResponse(tip)),
-        filters: describeTipFilters(params),
-      };
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.TIPS,
+        ttlMs: CACHE_TTLS_MS.tips,
+        fetchFn: async () => {
+          const where = buildTipWhere({ fromUserId: userId, ...VISIBLE_TIPS_ONLY }, params);
+          const result = await paginateWithCursor<Tip>(
+            this.prisma.tip,
+            {
+              limit: params.limit,
+              after: params.after || params.cursor,
+              sortBy: params.sortBy,
+              sortOrder: params.sortOrder,
+            },
+            {
+              where,
+              select: TIP_RESPONSE_SELECT,
+              allowedSortFields: ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+              defaultSortField: 'createdAt',
+              defaultSortDirection: 'desc',
+            }
+          );
+
+          return {
+            ...result,
+            items: result.items.map((tip) => this.formatTipResponse(tip)),
+            data: result.data.map((tip) => this.formatTipResponse(tip)),
+            filters: describeTipFilters(params),
+          };
+        },
+      });
     });
   }
 
@@ -665,43 +712,54 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.searchTips', async () => {
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, 20);
-
-      const where = buildTipWhere({}, options);
-
-      const sortFields = parseSortParameters(
-        options.sortBy,
-        options.sortOrder,
-        ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
-        'createdAt',
-        'desc'
+      const cacheKey = createCacheKey(
+        CacheType.TIPS,
+        `search:${safePage}:${safePageSize}:${cacheFingerprint(options)}`
       );
 
-      const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
-      const skip = (safePage - 1) * safePageSize;
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.TIPS,
+        ttlMs: CACHE_TTLS_MS.tips,
+        fetchFn: async () => {
+          const where = buildTipWhere({}, options);
 
-      const [tips, total] = await Promise.all([
-        this.prisma.tip.findMany({
-          where,
-          select: TIP_RESPONSE_SELECT,
-          skip,
-          take: safePageSize,
-          orderBy,
-        }),
-        this.prisma.tip.count({ where }),
-      ]);
+          const sortFields = parseSortParameters(
+            options.sortBy,
+            options.sortOrder,
+            ['createdAt', 'amount', 'status', 'id', 'updatedAt'],
+            'createdAt',
+            'desc'
+          );
 
-      const totalPages = Math.ceil(total / safePageSize);
+          const orderBy = sortFields.map((s) => ({ [s.field]: s.direction }));
+          const skip = (safePage - 1) * safePageSize;
 
-      return {
-        tips: tips.map((tip) => this.formatTipResponse(tip)),
-        total,
-        page: safePage,
-        pageSize: safePageSize,
-        totalPages,
-        hasNext: safePage < totalPages,
-        hasPrev: safePage > 1,
-        filters: describeTipFilters(options),
-      };
+          const [tips, total] = await Promise.all([
+            this.prisma.tip.findMany({
+              where,
+              select: TIP_RESPONSE_SELECT,
+              skip,
+              take: safePageSize,
+              orderBy,
+            }),
+            this.prisma.tip.count({ where }),
+          ]);
+
+          const totalPages = Math.ceil(total / safePageSize);
+
+          return {
+            tips: tips.map((tip) => this.formatTipResponse(tip)),
+            total,
+            page: safePage,
+            pageSize: safePageSize,
+            totalPages,
+            hasNext: safePage < totalPages,
+            hasPrev: safePage > 1,
+            filters: describeTipFilters(options),
+          };
+        },
+      });
     });
   }
 
@@ -967,6 +1025,11 @@ export class PaymentService extends BaseService {
         throw new ConflictError('Tip update did not complete', { tipId });
       }
 
+      await invalidateCaches(
+        tipCacheKeys(finalTip.id, finalTip.creatorId, finalTip.fromUserId),
+        finalTip.status === TipStatus.COMPLETED ? 'tip.completed' : 'tip.updated'
+      );
+
       // Process referral commission outside transaction (idempotent)
       if (shouldDispatchWebhook && finalTip) {
         try {
@@ -1098,7 +1161,7 @@ export class PaymentService extends BaseService {
     return this.executeWithLogging('payment.submitTransaction', async () => {
       const tip = await this.prisma.tip.findUnique({
         where: { id: tipId },
-        select: { id: true, status: true, transactionHash: true },
+        select: { id: true, status: true, transactionHash: true, creatorId: true, fromUserId: true },
       });
 
       if (!tip) {
@@ -1149,6 +1212,7 @@ export class PaymentService extends BaseService {
         logger.info(
           `Payment transaction submitted for tip: ${tipId}, hash: ${result.transactionHash}`
         );
+        await invalidateCaches(tipCacheKeys(tip.id, tip.creatorId, tip.fromUserId), 'tip.updated');
 
         return {
           tipId,

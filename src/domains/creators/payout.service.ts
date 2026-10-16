@@ -173,7 +173,10 @@ export class PayoutService extends BaseService {
 
         logger.info(`Payout completed for creator ${payout.creatorId}: ${payout.amount} XLM`);
         await invalidateCaches(
-          [earningsCacheKey(payout.creatorId), ...creatorCacheKeys(payout.creatorId)],
+          [
+            earningsCacheKey(payout.creatorId),
+            ...creatorCacheKeys(payout.creatorId, payout.creator.username, payout.creator.userId),
+          ],
           'payout.executed'
         );
 

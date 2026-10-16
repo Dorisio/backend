@@ -1,7 +1,9 @@
 # Monitoring and alerting
 
 The backend already exports Prometheus application, HTTP, Redis/database-pool,
-and Prisma query metrics at `/metrics`; the Kubernetes
+Prisma query, and cache metrics at `/metrics`; cache hits and misses are exposed
+as `dorisio_cache_hits_total` and `dorisio_cache_misses_total`, with the
+in-process hit ratio in `dorisio_cache_hit_rate`. The Kubernetes
 [`ServiceMonitor`](../infra/kubernetes/servicemonitor.yaml) scrapes that
 endpoint. The optional Compose `monitoring` profile adds Prometheus,
 Alertmanager, Grafana, Node Exporter, and PostgreSQL Exporter for an

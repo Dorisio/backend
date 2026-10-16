@@ -2,8 +2,12 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { CreateCreatorRequest, UpdateCreatorRequest } from './creator.types';
 import { ValidationError } from '../../utils/errors';
-import { getOrFetch, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
-import { invalidateCaches, creatorCacheKeys } from '../../lib/cache/invalidation';
+import { getOrFetch, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import {
+  creatorCacheKeys,
+  invalidateCaches,
+  userCacheKeys,
+} from '../../lib/cache/invalidation';
 import {
   DEFAULT_PAGE_SIZE,
   sanitizePageNumber,
@@ -80,6 +84,7 @@ export class CreatorService extends BaseService {
         where: { id: userId },
         data: { role: 'creator' },
       });
+      await invalidateCaches(userCacheKeys(userId), 'user.updated');
 
       return { id: creator.id, username: creator.username };
     });
@@ -144,15 +149,10 @@ export class CreatorService extends BaseService {
         select: CREATOR_PROFILE_SELECT,
       });
 
-      // Update cache for both ID and username
-      const idCacheKey = createCacheKey(CacheType.CREATOR, creatorId);
-      await update(idCacheKey, creator, CacheType.CREATOR);
-
-      if (creator.username) {
-        const usernameCacheKey = createCacheKey(CacheType.CREATOR, `username:${creator.username}`);
-        await update(usernameCacheKey, creator, CacheType.CREATOR);
-      }
-      await invalidateCaches(creatorCacheKeys(creatorId, creator.username), 'creator.updated');
+      await invalidateCaches(
+        creatorCacheKeys(creatorId, creator.username, creator.userId),
+        'creator.updated'
+      );
 
       return creator;
     });

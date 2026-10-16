@@ -4,13 +4,21 @@ import cache, { CacheType } from './index';
 import { logger } from '../../utils/logger';
 
 export const CACHE_TTLS_MS = {
-  tips: 5 * 60_000,
-  creators: 10 * 60_000,
+  tips: 5_000,
+  creators: 60_000,
+  users: 30_000,
   earnings: 60_000,
-  analytics: 5 * 60_000,
+  analytics: 60_000,
 } as const;
 
-export type CacheInvalidationReason = 'tip.created' | 'tip.completed' | 'payout.executed' | 'creator.updated' | 'manual';
+export type CacheInvalidationReason =
+  | 'tip.created'
+  | 'tip.updated'
+  | 'tip.completed'
+  | 'payout.executed'
+  | 'creator.updated'
+  | 'user.updated'
+  | 'manual';
 export interface CacheInvalidationEvent {
   type: 'cache.invalidate';
   keys: string[];
@@ -34,7 +42,9 @@ export async function invalidateCaches(
 ): Promise<void> {
   const uniqueKeys = [...new Set(keys.filter(Boolean))];
   if (uniqueKeys.length === 0) return;
-  await Promise.all(uniqueKeys.map((key) => cache.del(key)));
+  await Promise.all(
+    uniqueKeys.map((key) => (key.endsWith('*') ? cache.delPattern(key) : cache.del(key)))
+  );
   const event: CacheInvalidationEvent = {
     type: 'cache.invalidate', keys: uniqueKeys, reason, timestamp: new Date().toISOString(), source: sourceId(),
   };
@@ -80,16 +90,38 @@ export async function stopCacheInvalidationSubscriber(): Promise<void> {
   try { await subscriber.quit(); } finally { subscriber = null; started = false; }
 }
 
-export function tipCacheKeys(tipId: string, creatorId?: string): string[] {
+export function tipCacheKeys(tipId: string, creatorId?: string, userId?: string): string[] {
   return [
     `v1:tip:${tipId}`,
-    ...(creatorId ? [`v1:creator:${creatorId}`, `v1:earnings:${creatorId}`] : []),
+    ...(creatorId
+      ? [
+          `v1:tips:creator-list:${creatorId}:*`,
+          `v1:tips:creator-cursor:${creatorId}:*`,
+          `v1:tips:search:*`,
+          `v1:creator:${creatorId}`,
+          `v1:earnings:${creatorId}`,
+        ]
+      : []),
+    ...(userId
+      ? [
+          `v1:tips:user-history:${userId}:*`,
+          `v1:user:stats:transaction-history:${userId}:*`,
+        ]
+      : []),
     'v1:analytics:tips',
   ];
 }
 
-export function creatorCacheKeys(creatorId: string, username?: string): string[] {
-  return [`v1:creator:${creatorId}`, `v1:creator:userId:${creatorId}`, ...(username ? [`v1:creator:username:${username}`] : [])];
+export function creatorCacheKeys(creatorId: string, username?: string, userId?: string): string[] {
+  return [
+    `v1:creator:${creatorId}`,
+    ...(userId ? [`v1:creator:userId:${userId}`] : []),
+    ...(username ? [`v1:creator:username:${username}`] : []),
+  ];
+}
+
+export function userCacheKeys(userId: string): string[] {
+  return [`v1:user:${userId}`, `v1:user:${userId}:settings`];
 }
 
 export function earningsCacheKey(creatorId: string): string { return `v1:earnings:${creatorId}`; }

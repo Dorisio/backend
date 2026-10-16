@@ -17,10 +17,11 @@ vi.mock('../index', () => ({
     ANALYTICS: 'analytics',
   },
   TTL_CONFIG: {
-    user: 300000,
-    creator: 600000,
-    trending: 60000,
-    analytics: 3600000,
+    user: 30000,
+    creator: 60000,
+    tips: 5000,
+    trending: 30000,
+    analytics: 60000,
   },
 }));
 
@@ -60,7 +61,7 @@ describe('Cache-Aside Pattern', () => {
 
       expect(result).toEqual(freshData);
       expect(fetchFn).toHaveBeenCalledOnce();
-      expect(cache.set).toHaveBeenCalledWith('user:123', freshData, 300000);
+      expect(cache.set).toHaveBeenCalledWith('user:123', freshData, 30000);
     });
 
     it('should skip cache when skipCache is true', async () => {
@@ -150,7 +151,7 @@ describe('Cache-Aside Pattern', () => {
 
       await update('user:123', data, CacheType.USER);
 
-      expect(cache.set).toHaveBeenCalledWith('user:123', data, 300000);
+      expect(cache.set).toHaveBeenCalledWith('user:123', data, 30000);
     });
 
     it('should use custom TTL when provided', async () => {
