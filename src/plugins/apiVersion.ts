@@ -4,6 +4,9 @@ import { apiVersionCounter } from '../lib/metrics';
 import { config } from '../config';
 
 export const SUPPORTED_API_VERSIONS = ['1', '2'] as const;
+export const DEPRECATED_API_VERSIONS = ['1'] as const;
+export const API_VERSION_MIGRATION_GUIDE_URL =
+  'https://github.com/Dorisio/backend/blob/main/docs/API_VERSIONING.md';
 export type ApiVersion = (typeof SUPPORTED_API_VERSIONS)[number];
 const VERSION_HEADER = 'api-version';
 
@@ -19,10 +22,12 @@ function versionFromAccept(accept: string | undefined): string | null {
 
 export function resolveApiVersion(request: Pick<FastifyRequest, 'url' | 'headers'>): string {
   const explicit = request.headers[VERSION_HEADER];
-  return (typeof explicit === 'string' && explicit.trim()) ||
+  return (
+    (typeof explicit === 'string' && explicit.trim()) ||
     versionFromPath(request.url) ||
     versionFromAccept(request.headers.accept) ||
-    '1';
+    '1'
+  );
 }
 
 export function isSupportedApiVersion(version: string): version is ApiVersion {
@@ -31,6 +36,21 @@ export function isSupportedApiVersion(version: string): version is ApiVersion {
 
 export function registerApiVersioning(app: FastifyInstance): void {
   app.addHook('onRequest', async (request, reply) => {
+    const version = resolveApiVersion(request);
+    reply.header('API-Version', version);
+    reply.header('X-API-Version', version);
+    reply.header('Vary', 'Accept, API-Version');
+
+    if ((DEPRECATED_API_VERSIONS as readonly string[]).includes(version)) {
+      reply.header('X-API-Version-Deprecated', 'true');
+      reply.header('Deprecation', 'true');
+      reply.header(
+        'Warning',
+        `299 - "API version v${version} is deprecated; see ${API_VERSION_MIGRATION_GUIDE_URL}"`
+      );
+      reply.header('Link', `<${API_VERSION_MIGRATION_GUIDE_URL}>; rel="deprecation"`);
+    }
+
     const headerVersion = request.headers[VERSION_HEADER];
     const pathVersion = versionFromPath(request.url);
     const acceptVersion = versionFromAccept(request.headers.accept);
@@ -47,14 +67,30 @@ export function registerApiVersioning(app: FastifyInstance): void {
       return;
     }
     if (new Set(versions).size > 1) {
-      reply.code(400).send({ error: 'Conflicting API version selectors', code: 'CONFLICTING_API_VERSION' });
+      reply
+        .code(400)
+        .send({ error: 'Conflicting API version selectors', code: 'CONFLICTING_API_VERSION' });
       return;
     }
 
-    const version = resolveApiVersion(request);
-    reply.header('API-Version', version);
-    reply.header('Vary', 'Accept, API-Version');
     apiVersionCounter.inc({ version, path: request.routeOptions?.url ?? request.url });
+  });
+
+  app.addHook('preSerialization', async (request, _reply, payload) => {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    if (Object.getPrototypeOf(payload) !== Object.prototype) return payload;
+
+    const response = payload as Record<string, unknown>;
+    const existingMeta = response.meta;
+    const meta =
+      existingMeta !== null && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+        ? existingMeta
+        : {};
+
+    return {
+      ...response,
+      meta: { ...meta, apiVersion: resolveApiVersion(request) },
+    };
   });
 }
 
@@ -67,9 +103,13 @@ export interface DeprecationOptions {
 export function deprecateRoute(options: DeprecationOptions): onSendHookHandler {
   return async (_request, reply, payload) => {
     reply.header('Deprecation', 'true');
+    reply.header('X-API-Version-Deprecated', 'true');
     reply.header('Sunset', options.sunsetDate);
     reply.header('Warning', `299 - "${options.message}"`);
-    reply.header('Link', `<${options.migrationGuideUrl ?? '/docs/api-versioning'}>; rel="deprecation"`);
+    reply.header(
+      'Link',
+      `<${options.migrationGuideUrl ?? API_VERSION_MIGRATION_GUIDE_URL}>; rel="deprecation"`
+    );
     return payload;
   };
 }
