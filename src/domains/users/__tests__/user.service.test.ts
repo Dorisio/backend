@@ -1,28 +1,64 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../lib/cache/cache-aside', () => ({
+const { cacheStore, invalidateCaches } = vi.hoisted(() => {
+  const cacheStore = new Map<string, unknown>();
+  return {
+    cacheStore,
+    invalidateCaches: vi.fn(async (keys: string[]) => {
+      for (const key of keys) {
+        if (key.endsWith('*')) {
+          const prefix = key.slice(0, -1);
+          for (const cachedKey of cacheStore.keys()) {
+            if (cachedKey.startsWith(prefix)) cacheStore.delete(cachedKey);
+          }
+        } else {
+          cacheStore.delete(key);
+        }
+      }
+    }),
+  };
+});
+
+vi.mock('../../../lib/cache/cache-aside', () => ({
   CacheType: { USER: 'user' },
   createCacheKey: (type: string, id: string) => `${type}:${id}`,
-  getOrFetch: async ({ fetchFn }: { fetchFn: () => Promise<unknown> }) => fetchFn(),
-  update: async () => undefined,
-  invalidate: async () => undefined,
+  getOrFetch: async ({ key, fetchFn }: { key: string; fetchFn: () => Promise<unknown> }) => {
+    if (cacheStore.has(key)) return cacheStore.get(key);
+    const value = await fetchFn();
+    cacheStore.set(key, value);
+    return value;
+  },
+  update: async (key: string, value: unknown) => {
+    cacheStore.set(key, value);
+  },
 }));
 
-vi.mock('../../utils/token-blacklist', () => ({
+vi.mock('../../../lib/cache/invalidation', () => ({
+  CACHE_TTLS_MS: { users: 30_000 },
+  invalidateCaches,
+  userCacheKeys: (userId: string) => [
+    `user:${userId}`,
+    `user:${userId}:settings`,
+    `user:stats:transaction-history:${userId}:*`,
+  ],
+}));
+
+vi.mock('../../../utils/token-blacklist', () => ({
   blacklistToken: vi.fn(async () => undefined),
 }));
 
 import { UserService } from '../user.service';
 import { AVATAR_MAX_BYTES, decodeAvatarDataUrl } from '../avatar.storage';
-import { hashPassword } from '../../utils/password';
-import { ValidationError } from '../../utils/errors';
-import { blacklistToken } from '../../utils/token-blacklist';
+import { hashPassword } from '../../../utils/password';
+import { ValidationError } from '../../../utils/errors';
+import { blacklistToken } from '../../../utils/token-blacklist';
 
 /** Minimal in-memory Prisma stand-in covering the models UserService touches. */
 class FakePrisma {
   users: any[] = [];
   changes: any[] = [];
+  tips: any[] = [];
   private sequence = 0;
 
   private nextId(prefix: string): string {
@@ -59,6 +95,15 @@ class FakePrisma {
         .slice(skip, skip + take),
     count: async ({ where }: any) => this.changes.filter((row) => this.matches(row, where)).length,
   };
+
+  tip = {
+    findMany: vi.fn(async ({ where, skip = 0, take = 20 }: any) =>
+      this.tips.filter((tip) => tip.fromUserId === where.fromUserId).slice(skip, skip + take)
+    ),
+    count: vi.fn(async ({ where }: any) =>
+      this.tips.filter((tip) => tip.fromUserId === where.fromUserId).length
+    ),
+  };
 }
 
 const seedUser = (prisma: FakePrisma, overrides: Record<string, unknown> = {}) => {
@@ -86,6 +131,7 @@ describe('UserService profile management (#49)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    cacheStore.clear();
     prisma = new FakePrisma();
     seedUser(prisma);
     service = new UserService(prisma as any);
@@ -112,6 +158,45 @@ describe('UserService profile management (#49)', () => {
   it('only audits fields whose value actually changed', async () => {
     await service.updateUserProfile('u1', { name: 'Old Name' });
     expect(prisma.changes).toHaveLength(0);
+  });
+
+  it('caches user transaction history and invalidates it after profile changes', async () => {
+    prisma.tips.push({
+      id: 'tip-1',
+      fromUserId: 'u1',
+      amount: 10,
+      status: 'completed',
+      creatorId: 'creator-1',
+      message: 'first',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      creator: { displayName: 'Creator' },
+    });
+
+    const first = await service.getUserTransactionHistory('u1');
+    prisma.tips.push({
+      id: 'tip-2',
+      fromUserId: 'u1',
+      amount: 20,
+      status: 'pending',
+      creatorId: 'creator-1',
+      message: 'second',
+      createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      creator: { displayName: 'Creator' },
+    });
+
+    const cached = await service.getUserTransactionHistory('u1');
+    expect(cached).toEqual(first);
+    expect(prisma.tip.findMany).toHaveBeenCalledOnce();
+
+    await service.updateUserProfile('u1', { name: 'Updated Name' });
+    expect(invalidateCaches).toHaveBeenCalledWith(
+      expect.arrayContaining(['user:u1', 'user:u1:settings', 'user:stats:transaction-history:u1:*']),
+      'user.updated'
+    );
+
+    const refreshed = await service.getUserTransactionHistory('u1');
+    expect(refreshed.total).toBe(2);
+    expect(prisma.tip.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('refuses email changes through the profile endpoint', async () => {

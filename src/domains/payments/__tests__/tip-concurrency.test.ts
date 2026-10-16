@@ -1,5 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const { invalidateCaches } = vi.hoisted(() => ({
+  invalidateCaches: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../../lib/cache/invalidation', () => ({
+  CACHE_TTLS_MS: { tips: 5_000, users: 30_000 },
+  invalidateCaches,
+  tipCacheKeys: (tipId: string, creatorId?: string, userId?: string) => [
+    `v1:tip:${tipId}`,
+    ...(creatorId ? [`v1:tips:creator-list:${creatorId}:*`] : []),
+    ...(userId ? [`v1:tips:user-history:${userId}:*`] : []),
+  ],
+}));
+
 // The payment service statically imports the BullMQ queue module, which opens a
 // Redis connection on import. Mock it so these unit tests stay hermetic.
 vi.mock('../../../lib/queue', () => ({
@@ -131,6 +145,10 @@ describe('createTip idempotency (#48)', () => {
         data: expect.objectContaining({ idempotencyKey: 'key-12345678' }),
       })
     );
+    expect(invalidateCaches).toHaveBeenCalledWith(
+      ['v1:tip:tip-new', 'v1:tips:creator-list:creator-123:*', 'v1:tips:user-history:user-123:*'],
+      'tip.created'
+    );
   });
 });
 
@@ -156,6 +174,10 @@ describe('updateTipStatus optimistic locking (#48)', () => {
       where: { id: 'tip-123', status: 'pending', version: 0 },
       data: { status: 'completed', version: { increment: 1 } },
     });
+    expect(invalidateCaches).toHaveBeenCalledWith(
+      ['v1:tip:tip-123', 'v1:tips:creator-list:creator-123:*', 'v1:tips:user-history:user-123:*'],
+      'tip.completed'
+    );
   });
 
   it('throws NotFoundError if the tip does not exist', async () => {

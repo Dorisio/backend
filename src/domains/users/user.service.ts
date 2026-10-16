@@ -13,7 +13,8 @@ import {
   PaginatedTransactions,
 } from './user.types';
 import { ValidationError, NotFoundError } from '../../utils/errors';
-import { getOrFetch, invalidate, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import { getOrFetch, update, createCacheKey, CacheType } from '../../lib/cache/cache-aside';
+import { CACHE_TTLS_MS, invalidateCaches, userCacheKeys } from '../../lib/cache/invalidation';
 import { DEFAULT_PAGE_SIZE, sanitizePageNumber, sanitizePageSize } from '../../utils/pagination';
 import { comparePasswords, hashPassword } from '../../utils/password';
 import { blacklistToken } from '../../utils/token-blacklist';
@@ -127,10 +128,8 @@ export class UserService extends BaseService {
       }
 
       const cacheKey = createCacheKey(CacheType.USER, userId);
+      await invalidateCaches(userCacheKeys(userId), 'user.updated');
       await update(cacheKey, this.formatUserProfile(updatedUser), CacheType.USER);
-      // Settings are derived from the same row; drop the cached copy so the
-      // next read re-evaluates against fresh data.
-      await invalidate(createCacheKey(CacheType.USER, `${userId}:settings`));
 
       return this.formatUserProfile(updatedUser);
     });
@@ -187,7 +186,7 @@ export class UserService extends BaseService {
         await blacklistToken(accessToken, expiresAt);
       }
 
-      await invalidate(createCacheKey(CacheType.USER, userId));
+      await invalidateCaches(userCacheKeys(userId), 'user.updated');
 
       return { success: true, message: 'Password updated successfully' };
     });
@@ -268,6 +267,7 @@ export class UserService extends BaseService {
       }
 
       const cacheKey = createCacheKey(CacheType.USER, `${userId}:settings`);
+      await invalidateCaches(userCacheKeys(userId), 'user.updated');
       await update(cacheKey, updatedSettings, CacheType.USER);
 
       return updatedSettings;
@@ -307,6 +307,7 @@ export class UserService extends BaseService {
       );
 
       const cacheKey = createCacheKey(CacheType.USER, userId);
+      await invalidateCaches(userCacheKeys(userId), 'user.updated');
       await update(cacheKey, this.formatUserProfile(updatedUser), CacheType.USER);
 
       return this.formatUserProfile(updatedUser);
@@ -362,60 +363,71 @@ export class UserService extends BaseService {
       const safePage = sanitizePageNumber(page);
       const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
       const skip = (safePage - 1) * safePageSize;
+      const cacheKey = createCacheKey(
+        CacheType.USER,
+        `stats:transaction-history:${userId}:${safePage}:${safePageSize}`
+      );
 
-      const [tips, total] = await Promise.all([
-        this.prisma.tip.findMany({
-          where: {
-            fromUserId: userId,
-          },
-          select: {
-            id: true,
-            amount: true,
-            status: true,
-            creatorId: true,
-            message: true,
-            createdAt: true,
-            creator: {
+      return getOrFetch({
+        key: cacheKey,
+        type: CacheType.USER,
+        ttlMs: CACHE_TTLS_MS.users,
+        fetchFn: async () => {
+          const [tips, total] = await Promise.all([
+            this.prisma.tip.findMany({
+              where: {
+                fromUserId: userId,
+              },
               select: {
                 id: true,
-                displayName: true,
+                amount: true,
+                status: true,
+                creatorId: true,
+                message: true,
+                createdAt: true,
+                creator: {
+                  select: {
+                    id: true,
+                    displayName: true,
+                  },
+                },
               },
-            },
-          },
-          skip,
-          take: safePageSize,
-          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        }),
-        this.prisma.tip.count({
-          where: {
-            fromUserId: userId,
-          },
-        }),
-      ]);
+              skip,
+              take: safePageSize,
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            }),
+            this.prisma.tip.count({
+              where: {
+                fromUserId: userId,
+              },
+            }),
+          ]);
 
-      const transactions: UserTransactionHistoryResponse[] = tips.map((tip) => ({
-        id: tip.id,
-        amount: tip.amount,
-        status: tip.status,
-        creatorId: tip.creatorId,
-        creatorName: tip.creator?.displayName || 'Unknown Creator',
-        message: tip.message,
-        createdAt: tip.createdAt.toISOString(),
-      }));
+          const transactions: UserTransactionHistoryResponse[] = tips.map((tip) => ({
+            id: tip.id,
+            amount: tip.amount,
+            status: tip.status,
+            creatorId: tip.creatorId,
+            creatorName: tip.creator?.displayName || 'Unknown Creator',
+            message: tip.message,
+            createdAt: tip.createdAt.toISOString(),
+          }));
 
-      const totalPages = Math.ceil(total / safePageSize);
+          const totalPages = Math.ceil(total / safePageSize);
 
-      return {
-        transactions,
-        items: transactions,
-        data: transactions,
-        total,
-        page: safePage,
-        pageSize: safePageSize,
-        totalPages,
-        hasNext: safePage < totalPages,
-        hasPrev: safePage > 1,
-      };
+          return {
+            transactions,
+            items: transactions,
+            data: transactions,
+            total,
+            page: safePage,
+            pageSize: safePageSize,
+            totalPages,
+            hasNext: safePage < totalPages,
+            hasPrev: safePage > 1,
+          };
+        },
+      });
     });
   }
 

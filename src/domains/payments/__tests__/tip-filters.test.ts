@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { clear as clearCache } from '../../../lib/cache/index';
+
+vi.mock('../../../lib/redisPool', () => ({
+  withRedis: async (_operation: unknown, fallback: () => Promise<unknown>) => fallback(),
+}));
 import { TIP_TEXT_SEARCH_MAX_LENGTH, buildTipWhere, describeTipFilters } from '../tip-filters';
 import { TipHistoryQuerySchema } from '../payment.schemas';
 import { PaymentService } from '../payment.service';
+import { invalidateCaches, tipCacheKeys } from '../../../lib/cache/invalidation';
 
 describe('buildTipWhere', () => {
   it('keeps the base scope and applies nothing when there are no filters', () => {
@@ -160,9 +166,37 @@ describe('PaymentService filtered listings', () => {
   let paymentService: PaymentService;
   let prisma: ReturnType<typeof buildPrisma>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearCache();
     prisma = buildPrisma();
     paymentService = new PaymentService(prisma as any);
+  });
+
+  it('serves repeated creator tip listings from the cache', async () => {
+    const first = await paymentService.listTips('creator_1', 1, 20, { query: 'thanks' });
+    prisma.tip.findMany.mockResolvedValue([sampleTip(99)]);
+
+    const second = await paymentService.listTips('creator_1', 1, 20, { query: 'thanks' });
+
+    expect(prisma.tip.findMany).toHaveBeenCalledOnce();
+    expect(second).toEqual(first);
+  });
+
+  it('caches user tip history and refreshes it after tip invalidation', async () => {
+    const first = await paymentService.getUserTipHistory('user_1');
+    prisma.tip.findMany.mockResolvedValue([sampleTip(99)]);
+
+    const cached = await paymentService.getUserTipHistory('user_1');
+    expect(cached).toEqual(first);
+    expect(prisma.tip.findMany).toHaveBeenCalledOnce();
+
+    await invalidateCaches(tipCacheKeys('tip_1', 'creator_1', 'user_1'), 'tip.updated', {
+      publish: false,
+    });
+    const refreshed = await paymentService.getUserTipHistory('user_1');
+
+    expect(refreshed).not.toEqual(first);
+    expect(prisma.tip.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('pushes creator-listing filters into the database query and returns them', async () => {

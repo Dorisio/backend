@@ -34,10 +34,26 @@ describe('Cache Layer', () => {
 
   describe('TTL Configuration', () => {
     it('should have correct TTL values for each cache type', () => {
-      expect(TTL_CONFIG[CacheType.USER]).toBe(5 * 60 * 1000); // 5 minutes
-      expect(TTL_CONFIG[CacheType.CREATOR]).toBe(10 * 60 * 1000); // 10 minutes
-      expect(TTL_CONFIG[CacheType.TRENDING]).toBe(1 * 60 * 1000); // 1 minute
-      expect(TTL_CONFIG[CacheType.ANALYTICS]).toBe(60 * 60 * 1000); // 1 hour
+      expect(TTL_CONFIG[CacheType.USER]).toBe(30 * 1000);
+      expect(TTL_CONFIG[CacheType.CREATOR]).toBe(60 * 1000);
+      expect(TTL_CONFIG[CacheType.TIPS]).toBe(5 * 1000);
+      expect(TTL_CONFIG[CacheType.TRENDING]).toBe(30 * 1000);
+      expect(TTL_CONFIG[CacheType.ANALYTICS]).toBe(60 * 1000);
+    });
+
+    it('expires fallback cache entries after their TTL and updates hit-rate stats', async () => {
+      vi.mocked(withRedis).mockImplementation(async (_operation: any, fallback: any) => fallback());
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+      try {
+        await cache.set('ttl:test', { value: 1 }, 25);
+        expect(await cache.get('ttl:test')).toEqual({ value: 1 });
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        expect(await cache.get('ttl:test')).toBeNull();
+        expect(getStats()).toMatchObject({ hits: 1, misses: 1, hitRate: 0.5 });
+      } finally {
+        random.mockRestore();
+      }
     });
   });
 
@@ -93,15 +109,17 @@ describe('Cache Layer', () => {
     });
 
     it('should handle fetch errors gracefully', async () => {
+      vi.mocked(withRedis).mockImplementation(async (_operation: any, fallback: any) => fallback());
       const fetchFn = vi.fn().mockRejectedValue(new Error('DB Error'));
 
-      const result = await getOrFetch({
-        key: 'test:123',
-        type: CacheType.USER,
-        fetchFn,
-      });
-
-      expect(result).toBeUndefined();
+      await expect(
+        getOrFetch({
+          key: 'test:fetch-error',
+          type: CacheType.USER,
+          fetchFn,
+        })
+      ).rejects.toThrow('DB Error');
+      expect(fetchFn).toHaveBeenCalledOnce();
     });
   });
 
@@ -109,6 +127,17 @@ describe('Cache Layer', () => {
     it('should invalidate cache key', async () => {
       await invalidate('test:123');
       // Should not throw
+    });
+
+    it('deletes matching keys from the memory fallback', async () => {
+      vi.mocked(withRedis).mockImplementation(async (_fn: any, fallback: any) => fallback());
+      await cache.set('v1:tips:creator-list:creator_1:page-1', { id: 'tip-1' }, 5_000);
+      await cache.set('v1:tips:creator-list:creator_2:page-1', { id: 'tip-2' }, 5_000);
+
+      await cache.delPattern('v1:tips:creator-list:creator_1:*');
+
+      expect(await cache.get('v1:tips:creator-list:creator_1:page-1')).toBeNull();
+      expect(await cache.get('v1:tips:creator-list:creator_2:page-1')).toEqual({ id: 'tip-2' });
     });
   });
 

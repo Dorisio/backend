@@ -41,38 +41,36 @@ export async function getOrFetch<T>(options: CacheAsideOptions<T>): Promise<T> {
     return await fetchFn();
   }
 
+  let cached: unknown;
   try {
-    // Try to get from cache
-    const cached = await cache.get(key);
-    if (cached !== null) {
-      logger.debug(`Cache hit for key: ${key}`);
-      return cached as T;
-    }
-
-    logger.debug(`Cache miss for key: ${key}, fetching from source`);
-    const existing = inFlight.get(key) as Promise<T> | undefined;
-    if (existing) return await existing;
-    const load = (async () => {
-      const data = await fetchFn();
-      await cache.set(key, data, ttlMs ?? TTL_CONFIG[type]);
-      return data;
-    })();
-    inFlight.set(key, load);
-    try {
-      return await load;
-    } finally {
-      inFlight.delete(key);
-    }
+    cached = await cache.get(key);
   } catch (error) {
-    logger.error(`Cache-aside error for key: ${key}`, error);
+    logger.error(`Cache read failed for key: ${key}`, error);
+    return await fetchFn();
+  }
 
-    // On cache error, fallback to direct fetch
+  if (cached !== null) {
+    logger.debug(`Cache hit for key: ${key}`);
+    return cached as T;
+  }
+
+  logger.debug(`Cache miss for key: ${key}, fetching from source`);
+  const existing = inFlight.get(key) as Promise<T> | undefined;
+  if (existing) return await existing;
+  const load = (async () => {
+    const data = await fetchFn();
     try {
-      return await fetchFn();
-    } catch (fetchError) {
-      logger.error(`Fallback fetch failed for key: ${key}`, fetchError);
-      throw fetchError;
+      await cache.set(key, data, ttlMs ?? TTL_CONFIG[type]);
+    } catch (error) {
+      logger.error(`Cache write failed for key: ${key}`, error);
     }
+    return data;
+  })();
+  inFlight.set(key, load);
+  try {
+    return await load;
+  } finally {
+    inFlight.delete(key);
   }
 }
 
@@ -97,9 +95,12 @@ export async function invalidate(key: string): Promise<void> {
  * Note: This requires Redis SCAN operation, not implemented in basic cache
  */
 export async function invalidatePattern(pattern: string): Promise<void> {
-  logger.warn(`Pattern-based cache invalidation not implemented for: ${pattern}`);
-  // Pattern-based invalidation would require Redis SCAN or KEYS command
-  // For now, this is a placeholder for future implementation
+  try {
+    await cache.delPattern(pattern);
+    logger.debug(`Cache pattern invalidated: ${pattern}`);
+  } catch (error) {
+    logger.error(`Failed to invalidate cache pattern: ${pattern}`, error);
+  }
 }
 
 /**

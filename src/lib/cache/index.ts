@@ -20,14 +20,12 @@ export enum CacheType {
 
 /** Default TTL (ms) per cache domain. */
 export const TTL_CONFIG: Record<CacheType, number> = {
-  [CacheType.USER]: 5 * 60 * 1000, // 5 minutes
-  [CacheType.CREATOR]: 10 * 60 * 1000, // 10 minutes
-  [CacheType.TIPS]: 5 * 60 * 1000,
+  [CacheType.USER]: 30 * 1000,
+  [CacheType.CREATOR]: 60 * 1000,
+  [CacheType.TIPS]: 5 * 1000,
   [CacheType.EARNINGS]: 60 * 1000,
-  [CacheType.TRENDING]: 1 * 60 * 1000, // 1 minute
-  // Kept at the legacy cache-aside TTL for compatibility; analytics writes
-  // always invalidate immediately and invalidation policy caps fresh entries.
-  [CacheType.ANALYTICS]: 60 * 60 * 1000,
+  [CacheType.TRENDING]: 30 * 1000,
+  [CacheType.ANALYTICS]: 60 * 1000,
 };
 
 const memoryCache = new LRUCache<string, any>({
@@ -169,6 +167,33 @@ export async function del(key: string): Promise<void> {
   );
 }
 
+/** Delete matching keys using Redis SCAN, with prefix matching in the fallback cache. */
+export async function delPattern(pattern: string): Promise<void> {
+  if (!pattern.endsWith('*')) {
+    await del(pattern);
+    return;
+  }
+
+  stats.deletes++;
+  const prefix = pattern.slice(0, -1);
+  await withRedis(
+    async (client) => {
+      let cursor = 0;
+      do {
+        const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
+        cursor = result.cursor;
+        if (result.keys.length > 0) await client.del(result.keys);
+      } while (cursor !== 0);
+    },
+    async () => {
+      for (const key of memoryCache.keys()) {
+        if (key.startsWith(prefix)) memoryCache.delete(key);
+      }
+      cacheSizeGauge.set(memoryCache.size);
+    }
+  );
+}
+
 export async function clear(): Promise<void> {
   await withRedis(
     async (client) => {
@@ -269,6 +294,7 @@ export default {
   get,
   set,
   del,
+  delPattern,
   clear,
   makeKey,
   increment,
