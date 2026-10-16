@@ -1,10 +1,12 @@
 # API versioning and migration
 
-Dorisio uses URL path versioning: `/api/v1/...` and `/api/v2/...`. Both versions are supported concurrently. Clients may also send `API-Version: 1|2` or `Accept: application/vnd.dorisio.v2+json`; conflicting selectors return `400 CONFLICTING_API_VERSION`.
+Dorisio uses URL path versioning: `/api/v1/...` and `/api/v2/...`. Both versions remain supported concurrently, with v1 deprecated and v2 current. Clients may also send `API-Version: 1|2` or `Accept: application/vnd.dorisio.v2+json`; conflicting selectors return `400 CONFLICTING_API_VERSION`.
+
+Every JSON object response includes `meta.apiVersion` and the `X-API-Version` response header. The existing `API-Version` response header is also retained for compatibility. Responses negotiated as v1 include `X-API-Version-Deprecated: true`, a `Warning` header, and a `Link` header to this migration guide. Version 1 remains supported; no sunset date has been announced. Route-specific deprecations may additionally include a `Sunset` date.
 
 ## Deprecation
 
-Deprecated handlers use `Deprecation: true`, an RFC 8594 `Sunset` date, and a `Link: <...>; rel="deprecation"` migration link. A deprecated version remains supported for at least 12 months after the deprecation date. Version usage is exported as `dorisio_api_version_requests_total{version,path}`.
+Route-specific deprecated handlers use `Deprecation: true`, an RFC 8594 `Sunset` date, and a `Link: <...>; rel="deprecation"` migration link. A deprecated version remains supported for at least 12 months after the deprecation date. Version usage is exported as `dorisio_api_version_requests_total{version,path}`.
 
 ## v1 to v2 migration
 
