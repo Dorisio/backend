@@ -77,10 +77,22 @@ export const registerIncomingWebhookRoutes = (app: FastifyInstance, prisma: Pris
             },
           },
           response: {
-            200: { description: 'Webhook received and verified' },
-            400: { description: 'Invalid request or signature verification failed' },
-            401: { description: 'Signature verification failed' },
-            404: { description: 'Webhook not found' },
+            200: {
+              type: 'object',
+              description: 'Webhook received and verified',
+              additionalProperties: true,
+            },
+            400: {
+              type: 'object',
+              description: 'Invalid request or signature verification failed',
+              additionalProperties: true,
+            },
+            401: {
+              type: 'object',
+              description: 'Signature verification failed',
+              additionalProperties: true,
+            },
+            404: { type: 'object', description: 'Webhook not found', additionalProperties: true },
           },
         } as any,
       },
@@ -197,8 +209,12 @@ export const registerIncomingWebhookRoutes = (app: FastifyInstance, prisma: Pris
           },
         },
         response: {
-          200: { description: 'Verification information' },
-          404: { description: 'Webhook not found' },
+          200: {
+            type: 'object',
+            description: 'Verification information',
+            additionalProperties: true,
+          },
+          404: { type: 'object', description: 'Webhook not found', additionalProperties: true },
         },
       } as any,
     },
