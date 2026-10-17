@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { LoginRequest, PasswordResetConfirmRequestSchema, RegisterRequest } from './auth.types';
-import { TooManyRequestsError, ValidationError } from '../../utils/errors';
+import { TooManyRequestsError, UnauthorizedError, ValidationError } from '../../utils/errors';
 import { generateAccessToken, generateRefreshToken } from '../../utils/jwt';
 import { hashPassword, comparePasswords } from '../../utils/password';
 import { blacklistRefreshToken } from '../../utils/token-blacklist';
@@ -355,7 +355,7 @@ export class AuthService extends BaseService {
       // Check if refresh token is blacklisted (revoked/rotated)
       const isBlacklisted = await isRefreshTokenBlacklisted(payload.jti);
       if (isBlacklisted) {
-        throw new ValidationError('Refresh token has been revoked');
+        throw new UnauthorizedError('Refresh token has been revoked');
       }
 
       // Verify user still exists
@@ -367,7 +367,7 @@ export class AuthService extends BaseService {
         throw new ValidationError('User not found');
       }
       if ((payload.authVersion ?? 0) !== user.authVersion) {
-        throw new ValidationError('Refresh token has been revoked');
+        throw new UnauthorizedError('Refresh token has been revoked');
       }
 
       // Revoke old refresh token (rotation)
