@@ -1,11 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { comparePasswords } from '../../utils/password';
-import { TooManyRequestsError, ValidationError } from '../../utils/errors';
+import { TooManyRequestsError, UnauthorizedError, ValidationError } from '../../utils/errors';
 
 const { enqueueEmailMock } = vi.hoisted(() => ({ enqueueEmailMock: vi.fn() }));
 vi.mock('../../domains/notifications/email', () => ({ enqueueEmail: enqueueEmailMock }));
 
+const { generateAccessTokenMock, generateRefreshTokenMock, verifyRefreshTokenMock } = vi.hoisted(() => ({
+  generateAccessTokenMock: vi.fn(),
+  generateRefreshTokenMock: vi.fn(),
+  verifyRefreshTokenMock: vi.fn(),
+}));
+const { isRefreshTokenBlacklistedMock, blacklistRefreshTokenMock } = vi.hoisted(() => ({
+  isRefreshTokenBlacklistedMock: vi.fn(),
+  blacklistRefreshTokenMock: vi.fn(),
+}));
+
+vi.mock('../../utils/jwt', () => ({
+  generateAccessToken: generateAccessTokenMock,
+  generateRefreshToken: generateRefreshTokenMock,
+  verifyRefreshToken: verifyRefreshTokenMock,
+}));
+
+vi.mock('../../utils/token-blacklist', () => ({
+  isRefreshTokenBlacklisted: isRefreshTokenBlacklistedMock,
+  blacklistRefreshToken: blacklistRefreshTokenMock,
+}));
+
+vi.mock('../../config', () => ({
+  config: { JWT_REFRESH_EXPIRES_IN: '7d' },
+}));
+
 import { AuthService } from './auth.service';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../../utils/jwt';
+import { isRefreshTokenBlacklisted, blacklistRefreshToken } from '../../utils/token-blacklist';
 
 const validUser = { id: 'user-1', email: 'person@example.com', name: 'Person' };
 const resetRecord = {
@@ -141,5 +168,63 @@ describe('AuthService password reset', () => {
 
     await expect(service.confirmPasswordReset('raw-secret-token', 'NewPassword7')).rejects.toBeInstanceOf(ValidationError);
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService refresh token rotation', () => {
+  let service: AuthService;
+  const user = { id: 'user-1', email: 'person@example.com', name: 'Person', authVersion: 1 };
+  const refreshToken = 'old-refresh-token';
+  const payload = { userId: 'user-1', jti: 'old-jti', authVersion: 1, iat: 1000 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new AuthService(mockPrisma as never);
+    mockPrisma.user.findUnique.mockResolvedValue(user);
+    verifyRefreshTokenMock.mockResolvedValue(payload);
+    isRefreshTokenBlacklistedMock.mockResolvedValue(false);
+    blacklistRefreshTokenMock.mockResolvedValue(undefined);
+    generateAccessTokenMock.mockReturnValue('new-access-token');
+    generateRefreshTokenMock.mockReturnValue('new-refresh-token');
+  });
+
+  it('issues a new access/refresh token pair and blacklists the old JTI', async () => {
+    const result = await service.refreshAccessToken(refreshToken);
+
+    expect(verifyRefreshTokenMock).toHaveBeenCalledWith(refreshToken);
+    expect(isRefreshTokenBlacklistedMock).toHaveBeenCalledWith('old-jti');
+    expect(blacklistRefreshTokenMock).toHaveBeenCalledWith('old-jti', expect.any(Date));
+    expect(generateAccessTokenMock).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      jti: expect.any(String),
+      authVersion: 1,
+    }));
+    expect(generateRefreshTokenMock).toHaveBeenCalledWith('user-1', expect.any(String), 1);
+    expect(blacklistRefreshTokenMock).toHaveBeenCalledTimes(2);
+    expect(result.accessToken).toBe('new-access-token');
+    expect(result.refreshToken).toBe('new-refresh-token');
+  });
+
+  it('rejects a blacklisted (revoked) refresh token with 401', async () => {
+    isRefreshTokenBlacklistedMock.mockResolvedValue(true);
+
+    await expect(service.refreshAccessToken(refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(generateAccessTokenMock).not.toHaveBeenCalled();
+    expect(generateRefreshTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a refresh token with a stale authVersion', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ ...user, authVersion: 2 });
+
+    await expect(service.refreshAccessToken(refreshToken)).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(generateAccessTokenMock).not.toHaveBeenCalled();
+    expect(generateRefreshTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a refresh token for a missing user', async () => {
+    mockPrisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(service.refreshAccessToken(refreshToken)).rejects.toBeInstanceOf(ValidationError);
+    expect(generateAccessTokenMock).not.toHaveBeenCalled();
   });
 });
