@@ -1,13 +1,24 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { PayoutService } from './payout.service';
-import { CreatorPayoutSchema } from './creator.types';
+import { CreatorPayoutSchema, CalculatePayoutFeeSchema } from './creator.types';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
 import { ValidationError, AppError } from '../../utils/errors';
+import type { CreatorTierRuntime } from './tier.runtime';
+import type { AuditService } from '../../services/audit.service';
 
-export const registerCreatorPayoutRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
-  const payoutService = new PayoutService(prisma);
+export interface CreatorPayoutRoutesOptions {
+  tierRuntime?: CreatorTierRuntime;
+  auditService?: AuditService;
+}
+
+export const registerCreatorPayoutRoutes = (
+  app: FastifyInstance,
+  prisma: PrismaClient,
+  options: CreatorPayoutRoutesOptions = {}
+): void => {
+  const payoutService = new PayoutService(prisma, options);
 
   // GET /api/v1/creators/dashboard - Get creator dashboard
   app.get(
@@ -101,6 +112,53 @@ export const registerCreatorPayoutRoutes = (app: FastifyInstance, prisma: Prisma
 
         const result = await payoutService.processPayout(creator.id, body);
         reply.code(201).send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else if (error instanceof Error && error.message.includes('validation')) {
+          reply
+            .code(400)
+            .send(
+              formatError((error as any).message || 'Invalid request body', 'VALIDATION_ERROR')
+            );
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+ 
+  // POST /api/v1/creators/payout/calculate - Preview fee calculation and tier eligibility
+  app.post<{ Body: any }>(
+    '/api/v1/creators/payout/calculate',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+
+        if (!user) {
+          throw new Error('User not found in request');
+        }
+
+        const body = CalculatePayoutFeeSchema.parse(request.body);
+
+        const creator = await prisma.creator.findUnique({
+          where: { userId: user.userId },
+        });
+
+        if (!creator) {
+          reply.code(404).send(formatError('Creator profile not found', 'NOT_FOUND'));
+          return;
+        }
+
+        const result = await payoutService.calculatePayoutFee(creator.id, body.amount, {
+          followerCount: body.followerCount,
+          strictTierEnforcement: body.strictTierEnforcement,
+        });
+
+        reply.send(formatSuccess(result));
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(error.statusCode).send(formatError(error.message, error.code));

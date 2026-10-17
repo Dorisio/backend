@@ -5,8 +5,10 @@ import { createCreatorTierRuntime } from '../tier.runtime';
 import { registerCreatorTierRoutes } from '../tier.routes';
 import { CreatorTierLimiter } from '../../../lib/creator-tier-limits';
 
-// authMiddleware is intercepted so the tests control request.user without JWTs.
-const authMiddlewareMock = vi.fn();
+const { authMiddlewareMock } = vi.hoisted(() => ({
+  authMiddlewareMock: vi.fn(),
+}));
+
 vi.mock('../../../middleware/auth', () => ({
   authMiddleware: authMiddlewareMock,
 }));

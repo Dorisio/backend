@@ -1,23 +1,214 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
-import type { CreatorPayoutRequest } from './creator.types';
-import { ValidationError, NotFoundError } from '../../utils/errors';
+import type { CreatorPayoutRequest, CreatorPayoutResponse, CreatorTierEvaluation } from './creator.types';
+import { ValidationError, NotFoundError, ForbiddenError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { getStellarClient } from '../../lib/stellar/client';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { config } from '../../config/env';
 import { invalidateCaches, earningsCacheKey, creatorCacheKeys } from '../../lib/cache/invalidation';
+import { AuditService } from '../../services/audit.service';
+import {
+  CreatorTierRuntime,
+  creatorTiers,
+  getTierFor,
+  isEligibleForTier,
+  getFeeRateForTier,
+  TIER_PAYOUT_THRESHOLDS,
+} from './tier.runtime';
+import { CreatorTier, isCreatorTier } from '../../config/creator-tiers';
+
+export interface PayoutServiceOptions {
+  tierRuntime?: CreatorTierRuntime;
+  auditService?: AuditService;
+  now?: () => number;
+}
 
 export class PayoutService extends BaseService {
-  constructor(private prisma: PrismaClient) {
+  private tierRuntime?: CreatorTierRuntime;
+  private auditService: AuditService;
+
+  constructor(
+    private prisma: PrismaClient,
+    options: PayoutServiceOptions = {}
+  ) {
     super();
+    this.tierRuntime = options.tierRuntime;
+    this.auditService = options.auditService ?? new AuditService(prisma.auditLog as any);
+  }
+
+  /**
+   * Evaluate creator tier eligibility against earnings and follower count thresholds.
+   * If the creator is not eligible for their claimed/current tier:
+   * - If strictTierEnforcement is requested: throws ForbiddenError (403)
+   * - Otherwise: falls back to the default (lowest) tier fees ('free' tier)
+   */
+  async evaluateCreatorTierEligibility(
+    creatorId: string,
+    options: {
+      requestedAmount?: number;
+      followerCount?: number;
+      strictTierEnforcement?: boolean;
+    } = {}
+  ): Promise<CreatorTierEvaluation> {
+    return this.executeWithLogging('payout.evaluateTierEligibility', async () => {
+      const creator = await this.prisma.creator.findUnique({
+        where: { id: creatorId },
+        include: {
+          user: true,
+        },
+      });
+
+      if (!creator) {
+        throw new NotFoundError('Creator');
+      }
+
+      // 1. Resolve claimed / current tier
+      let claimedTier: CreatorTier = 'free';
+      if (this.tierRuntime?.resolver) {
+        try {
+          const ctx = await this.tierRuntime.resolver.resolve(creator.userId);
+          if (ctx?.tier && isCreatorTier(ctx.tier)) {
+            claimedTier = ctx.tier;
+          }
+        } catch {
+          // fallback to subscription query
+        }
+      }
+
+      if (claimedTier === 'free' && (this.prisma as any).creatorSubscription) {
+        try {
+          const sub = await (this.prisma as any).creatorSubscription.findUnique({
+            where: { creatorId },
+          });
+          if (sub?.tier && isCreatorTier(sub.tier)) {
+            claimedTier = sub.tier as CreatorTier;
+          }
+        } catch {
+          // fallback
+        }
+      }
+
+      if (claimedTier === 'free' && (creator as any).tier && isCreatorTier((creator as any).tier)) {
+        claimedTier = (creator as any).tier as CreatorTier;
+      }
+
+      // 2. Fetch creator earnings
+      const earnings = creator.totalEarnings ?? 0;
+
+      // 3. Fetch follower count
+      let followerCount =
+        options.followerCount ??
+        (creator as any).followerCount ??
+        (creator as any).followersCount ??
+        (creator as any).metadata?.followerCount;
+
+      if (followerCount === undefined) {
+        try {
+          const uniqueSupporters = await this.prisma.tip.findMany({
+            where: { creatorId },
+            select: { fromUserId: true },
+            distinct: ['fromUserId'],
+          });
+          followerCount = uniqueSupporters.length;
+        } catch {
+          followerCount = 0;
+        }
+      }
+
+      // 4. Verify against thresholds
+      const threshold = TIER_PAYOUT_THRESHOLDS[claimedTier] ?? TIER_PAYOUT_THRESHOLDS.free;
+      const isEligible = isEligibleForTier(claimedTier, earnings, followerCount);
+
+      let appliedTier: CreatorTier;
+      let feeRate: number;
+
+      if (isEligible) {
+        appliedTier = claimedTier;
+        feeRate = getFeeRateForTier(claimedTier);
+      } else {
+        if (options.strictTierEnforcement) {
+          // Record tier rejection in payout audit trail before throwing 403
+          try {
+            await this.auditService.record({
+              userId: creator.userId,
+              action: 'payout.tier_evaluation',
+              resource: 'creator',
+              resourceId: creatorId,
+              changes: {
+                claimedTier: { old: null, new: claimedTier },
+                appliedTier: { old: null, new: 'rejected' },
+                isEligible: { old: null, new: false },
+                earnings: { old: null, new: earnings },
+                followerCount: { old: null, new: followerCount },
+                feeRate: { old: null, new: null },
+                grossAmount: { old: null, new: options.requestedAmount ?? 0 },
+                reason: {
+                  old: null,
+                  new: `Ineligible for ${claimedTier} tier: requires min earnings ${threshold.minEarnings} and min followers ${threshold.minFollowers}`,
+                },
+              },
+            });
+          } catch (err) {
+            logger.warn('Failed to record audit trail on forbidden payout tier check:', err);
+          }
+
+          throw new ForbiddenError(
+            `Creator is not eligible for ${claimedTier} tier payout fee rate: requires min ${threshold.minEarnings} earnings and ${threshold.minFollowers} followers (current: ${earnings} earnings, ${followerCount} followers).`,
+            {
+              claimedTier,
+              requiredEarnings: threshold.minEarnings,
+              requiredFollowers: threshold.minFollowers,
+              currentEarnings: earnings,
+              currentFollowers: followerCount,
+            }
+          );
+        }
+
+        // Ineligible creators receive standard (lowest) tier fees
+        appliedTier = 'free';
+        feeRate = getFeeRateForTier('free');
+      }
+
+      const grossAmount = options.requestedAmount ?? 0;
+      const feeAmount = Number((grossAmount * feeRate).toFixed(7));
+      const netAmount = Number((grossAmount - feeAmount).toFixed(7));
+
+      return {
+        claimedTier,
+        appliedTier,
+        isEligible,
+        earnings,
+        followerCount,
+        feeRate,
+        feeAmount,
+        grossAmount,
+        netAmount,
+        thresholds: threshold,
+      };
+    });
+  }
+
+  /**
+   * Preview or calculate payout fee and net amount for a given gross amount and creator.
+   */
+  async calculatePayoutFee(
+    creatorId: string,
+    grossAmount: number,
+    options: { followerCount?: number; strictTierEnforcement?: boolean } = {}
+  ): Promise<CreatorTierEvaluation> {
+    return this.evaluateCreatorTierEligibility(creatorId, {
+      requestedAmount: grossAmount,
+      followerCount: options.followerCount,
+      strictTierEnforcement: options.strictTierEnforcement,
+    });
   }
 
   /**
    * Process payout from pending balance to total earnings
-   * This creates a payout record and queues it for processing
+   * This creates a payout record, logs tier decision in audit trail, and executes the Stellar payout
    */
-  async processPayout(creatorId: string, data: CreatorPayoutRequest): Promise<any> {
+  async processPayout(creatorId: string, data: CreatorPayoutRequest): Promise<CreatorPayoutResponse> {
     return this.executeWithLogging('payout.process', async () => {
       const creator = await this.prisma.creator.findUnique({
         where: { id: creatorId },
@@ -57,27 +248,70 @@ export class PayoutService extends BaseService {
         );
       }
 
-      // Create payout record
+      // Evaluate tier eligibility before applying tier-specific fee rates
+      const tierEvaluation = await this.evaluateCreatorTierEligibility(creatorId, {
+        requestedAmount: data.amount,
+        followerCount: data.followerCount,
+        strictTierEnforcement: data.strictTierEnforcement,
+      });
+
+      // Create payout record with net payout amount
       const payout = await this.prisma.payout.create({
         data: {
           creatorId,
-          amount: data.amount,
+          amount: tierEvaluation.netAmount,
           status: 'pending' as any,
           walletAddress: wallet.publicKey,
         },
       });
 
-      logger.info(`Payout request created for creator ${creatorId}: ${data.amount} to ${wallet.publicKey}`);
+      // Log tier decisions in payout audit trail for reconciliation
+      try {
+        await this.auditService.record({
+          userId: creator.userId,
+          action: 'payout.tier_evaluation',
+          resource: 'payout',
+          resourceId: payout.id,
+          changes: {
+            claimedTier: { old: null, new: tierEvaluation.claimedTier },
+            appliedTier: { old: null, new: tierEvaluation.appliedTier },
+            isEligible: { old: null, new: tierEvaluation.isEligible },
+            earnings: { old: null, new: tierEvaluation.earnings },
+            followerCount: { old: null, new: tierEvaluation.followerCount },
+            feeRate: { old: null, new: tierEvaluation.feeRate },
+            feeAmount: { old: null, new: tierEvaluation.feeAmount },
+            grossAmount: { old: null, new: tierEvaluation.grossAmount },
+            netAmount: { old: null, new: tierEvaluation.netAmount },
+          },
+        });
+      } catch (err) {
+        logger.warn(`Failed to record audit trail for payout ${payout.id}:`, err);
+      }
 
-      // Queue payout for processing (in production, this would go to a worker queue)
-      // For now, process synchronously for simplicity
-      await this.executePayoutTransaction(payout.id);
+      logger.info(
+        `Payout request created for creator ${creatorId}: gross ${data.amount}, fee ${tierEvaluation.feeAmount} (${(tierEvaluation.feeRate * 100)}% - tier ${tierEvaluation.appliedTier}), net ${tierEvaluation.netAmount} to ${wallet.publicKey}`
+      );
+
+      // Execute payout transaction (passes gross amount to decrement full requested amount)
+      await this.executePayoutTransaction(payout.id, data.amount);
+
+      const remainingPending = Math.max(0, creator.pendingBalance - data.amount);
 
       return {
         id: payout.id,
         amount: payout.amount,
+        payoutAmount: data.amount,
+        grossAmount: data.amount,
+        fee: tierEvaluation.feeAmount,
+        feeAmount: tierEvaluation.feeAmount,
+        feeRate: tierEvaluation.feeRate,
+        netAmount: tierEvaluation.netAmount,
+        tier: tierEvaluation.appliedTier,
+        claimedTier: tierEvaluation.claimedTier,
+        tierEligible: tierEvaluation.isEligible,
         status: payout.status,
         walletAddress: payout.walletAddress,
+        pendingBalance: remainingPending,
       };
     });
   }
@@ -86,7 +320,7 @@ export class PayoutService extends BaseService {
    * Execute the actual Stellar transaction for a payout
    * This is called by the worker queue in production
    */
-  private async executePayoutTransaction(payoutId: string): Promise<void> {
+  private async executePayoutTransaction(payoutId: string, grossAmount?: number): Promise<void> {
     return this.executeWithLogging('payout.executeTransaction', async () => {
       const payout = await this.prisma.payout.findUnique({
         where: { id: payoutId },
@@ -166,7 +400,7 @@ export class PayoutService extends BaseService {
           where: { id: payout.creatorId },
           data: {
             pendingBalance: {
-              decrement: payout.amount,
+              decrement: grossAmount ?? payout.amount,
             },
           },
         });
