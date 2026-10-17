@@ -5,9 +5,10 @@ import { DisputeService, ResolveDisputeInput } from './dispute.service';
 import { PaymentStatus } from '../../lib/payments/types';
 import { formatSuccess, formatError } from '../../types/response';
 import { requireAdmin } from '../../middleware/rbac';
-import { AppError, UnauthorizedError } from '../../utils/errors';
+import { AppError, UnauthorizedError, ValidationError } from '../../utils/errors';
 import cache, { getStats, resetStats } from '../../lib/cache/index';
 import { CacheWarmer } from '../../lib/cache/cache-warming';
+import { ReconciliationService } from './reconciliation.service';
 
 export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const adminService = new AdminService(prisma);
@@ -625,4 +626,71 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
 
   registerDisputeRoutes('/api/admin');
   registerDisputeRoutes('/api/v1/admin');
+
+  registerReconciliationRoutes('/api/admin');
+  registerReconciliationRoutes('/api/v1/admin');
+};
+
+type ReconciliationQuery = { from?: string; to?: string; format?: 'json' | 'csv' };
+
+function reconciliationPeriod(query: ReconciliationQuery): { from: Date; to: Date } {
+  const to = query.to ? new Date(query.to) : new Date();
+  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) {
+    throw new ValidationError('from and to must be valid dates with from before to');
+  }
+  return { from, to };
+}
+
+const registerReconciliationRoutes = (prefix: string) => {
+  app.get<{ Querystring: ReconciliationQuery }>(
+    `${prefix}/payments/reconciliation`,
+    {
+      preHandler: requireAdmin,
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            from: { type: 'string', description: 'Start of period (ISO-8601)' },
+            to: { type: 'string', description: 'End of period (ISO-8601)' },
+            format: { type: 'string', enum: ['json', 'csv'], description: 'Response format' },
+          },
+        },
+        response: {
+          200: { type: 'null', description: 'Reconciliation report' },
+          400: { type: 'null', description: 'Invalid period' },
+          401: { type: 'null', description: 'Unauthorized' },
+          403: { type: 'null', description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new UnauthorizedError('User not found');
+
+        const range = reconciliationPeriod(request.query as ReconciliationQuery);
+        const reconciliationService = new ReconciliationService(prisma);
+        const report = await reconciliationService.getReconciliationReport(user.userId, range);
+
+        if (request.query.format === 'csv') {
+          const csv = await reconciliationService.toCsv(report);
+          return reply
+            .type('text/csv; charset=utf-8')
+            .header('Content-Disposition', 'attachment; filename="reconciliation-report.csv"')
+            .send(csv);
+        }
+        return reply.send(formatSuccess(report));
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          return reply.code(403).send(formatError(error.message, error.code));
+        } else if (error instanceof ValidationError) {
+          return reply.code(400).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          return reply.code(error.statusCode).send(formatError(error.message, error.code));
+        }
+        throw error;
+      }
+    }
+  );
 };
