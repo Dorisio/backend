@@ -6,12 +6,19 @@
  * database, and assert on the rows that were actually written.
  */
 import type { PrismaClient } from '@prisma/client';
+import * as StellarSdk from '@stellar/stellar-sdk';
 
 export class FakeTierPrisma {
   creators: any[] = [];
   subscriptions: any[] = [];
   invoices: any[] = [];
   usageRows: any[] = [];
+  wallets: any[] = [];
+  payouts: any[] = [];
+  auditLogs: any[] = [];
+  tips: any[] = [];
+  webhooks: any[] = [];
+  webhookEvents: any[] = [];
 
   private seq = 0;
 
@@ -20,14 +27,46 @@ export class FakeTierPrisma {
     return `${prefix}_${this.seq}`;
   }
 
-  seedCreator(overrides: Partial<{ id: string; userId: string; username: string }> = {}): any {
+  seedCreator(
+    overrides: Partial<{
+      id: string;
+      userId: string;
+      username: string;
+      totalEarnings: number;
+      pendingBalance: number;
+      followerCount: number;
+    }> = {}
+  ): any {
     const creator = {
       id: overrides.id ?? this.nextId('creator'),
       userId: overrides.userId ?? 'user_1',
       username: overrides.username ?? 'stellar-fan',
+      totalEarnings: overrides.totalEarnings ?? 0,
+      pendingBalance: overrides.pendingBalance ?? 500,
+      followerCount: overrides.followerCount ?? 0,
+      user: {
+        id: overrides.userId ?? 'user_1',
+        email: 'creator@example.com',
+        name: 'Creator One',
+        verified: true,
+      },
+      ...overrides,
     };
     this.creators.push(creator);
     return creator;
+  }
+
+  seedWallet(userId: string, overrides: Record<string, any> = {}): any {
+    const wallet = {
+      id: this.nextId('wallet'),
+      userId,
+      publicKey: overrides.publicKey ?? StellarSdk.Keypair.random().publicKey(),
+      verified: true,
+      createdAt: new Date(),
+      ...overrides,
+    };
+    this.wallets.push(wallet);
+    return wallet;
   }
 
   seedSubscription(creatorId: string, overrides: Record<string, any> = {}): any {
@@ -85,6 +124,20 @@ export class FakeTierPrisma {
         }
       }
       return out;
+    },
+    update: async ({ where, data }: any) => {
+      const creator = this.creators.find((candidate) =>
+        where.userId !== undefined ? candidate.userId === where.userId : candidate.id === where.id
+      );
+      if (!creator) throw new Error('Creator not found');
+      if (data.pendingBalance?.decrement !== undefined) {
+        creator.pendingBalance -= data.pendingBalance.decrement;
+      }
+      if (data.pendingBalance?.increment !== undefined) {
+        creator.pendingBalance += data.pendingBalance.increment;
+      }
+      Object.assign(creator, { ...data, pendingBalance: creator.pendingBalance });
+      return creator;
     },
   };
 
@@ -187,6 +240,116 @@ export class FakeTierPrisma {
       this.usageRows.push(row);
       return row;
     },
+  };
+
+  wallet = {
+    findFirst: async ({ where }: any) => {
+      return (
+        this.wallets.find((w) => {
+          if (where.userId && w.userId !== where.userId) return false;
+          if (where.verified !== undefined && w.verified !== where.verified) return false;
+          return true;
+        }) ?? null
+      );
+    },
+  };
+
+  payout = {
+    create: async ({ data }: any) => {
+      const payout = {
+        id: this.nextId('payout'),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        retryCount: 0,
+        status: 'pending',
+        ...data,
+      };
+      this.payouts.push(payout);
+      return payout;
+    },
+    findUnique: async ({ where }: any) => {
+      const p = this.payouts.find((item) => item.id === where.id);
+      if (!p) return null;
+      const creator = this.creators.find((c) => c.id === p.creatorId);
+      return { ...p, creator };
+    },
+    update: async ({ where, data }: any) => {
+      const p = this.payouts.find((item) => item.id === where.id);
+      if (!p) throw new Error('Payout not found');
+      Object.assign(p, data, { updatedAt: new Date() });
+      return p;
+    },
+    findMany: async ({ where = {}, take }: any = {}) => {
+      const rows = this.payouts.filter((p) =>
+        where.creatorId ? p.creatorId === where.creatorId : true
+      );
+      return take ? rows.slice(0, take) : rows;
+    },
+  };
+
+  auditLog = {
+    create: async ({ data }: any) => {
+      const row = {
+        id: this.nextId('audit'),
+        timestamp: new Date(),
+        ...data,
+      };
+      this.auditLogs.push(row);
+      return row;
+    },
+    findMany: async ({ where = {}, take }: any = {}) => {
+      const rows = this.auditLogs.filter((a) => {
+        if (where.resource && a.resource !== where.resource) return false;
+        if (where.resourceId && a.resourceId !== where.resourceId) return false;
+        if (where.userId && a.userId !== where.userId) return false;
+        if (where.action && a.action !== where.action) return false;
+        return true;
+      });
+      return take ? rows.slice(0, take) : rows;
+    },
+    deleteMany: async () => ({ count: 0 }),
+  };
+
+  tip = {
+    findMany: async ({ where = {}, distinct }: any = {}) => {
+      let rows = this.tips.filter((t) => {
+        if (where.creatorId && t.creatorId !== where.creatorId) return false;
+        if (where.status && t.status !== where.status) return false;
+        return true;
+      });
+      if (distinct && distinct.includes('fromUserId')) {
+        const seen = new Set();
+        rows = rows.filter((t) => {
+          if (seen.has(t.fromUserId)) return false;
+          seen.add(t.fromUserId);
+          return true;
+        });
+      }
+      return rows;
+    },
+    count: async ({ where = {} }: any = {}) => {
+      return this.tips.filter((t) =>
+        where.creatorId ? t.creatorId === where.creatorId : true
+      ).length;
+    },
+    aggregate: async ({ where = {} }: any = {}) => {
+      const rows = this.tips.filter((t) =>
+        where.creatorId ? t.creatorId === where.creatorId : true
+      );
+      const sum = rows.reduce((acc, t) => acc + (t.amount || 0), 0);
+      return {
+        _count: rows.length,
+        _sum: { amount: sum },
+      };
+    },
+  };
+
+  webhook = {
+    findMany: async () => [],
+  };
+
+  webhookEvent = {
+    create: async ({ data }: any) => data,
   };
 }
 
