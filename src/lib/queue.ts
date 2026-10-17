@@ -81,6 +81,7 @@ export const QUEUE_NAMES = {
   exports: 'exports',
   deadLetter: 'dead-letter',
   emailNotifications: 'email-notifications',
+  webhookRetry: 'webhook-retry',
 } as const;
 
 function createQueue(name: string, connection: ConnectionOptions | RedisClient): Queue {
@@ -101,10 +102,12 @@ export const imageProcessingQueue = createQueue(QUEUE_NAMES.imageProcessing, bul
 export const analyticsQueue = createQueue(QUEUE_NAMES.analytics, bullConnection);
 export const exportsQueue = createQueue(QUEUE_NAMES.exports, bullConnection);
 export const deadLetterQueue = createQueue(QUEUE_NAMES.deadLetter, bullConnection);
+export const webhookRetryQueue = createQueue(QUEUE_NAMES.webhookRetry, bullConnection);
 
 export const allQueues = [
   stellarConfirmationQueue,
   webhookDispatchQueue,
+  webhookRetryQueue,
   emailQueue,
   imageProcessingQueue,
   analyticsQueue,
@@ -213,6 +216,7 @@ export async function closeQueues(): Promise<void> {
     analyticsQueue,
     exportsQueue,
     deadLetterQueue,
+    webhookRetryQueue,
     emailNotificationQueue,
   ];
   const events = [

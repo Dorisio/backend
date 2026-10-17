@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { WebhookService, CreateWebhookRequest } from './webhook.service';
 import { formatSuccess, formatError } from '../../types/response';
 import { authMiddleware } from '../../middleware/auth';
+import { requireAdmin } from '../../middleware/rbac';
 import { ValidationError, AppError } from '../../utils/errors';
 
 export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
@@ -311,6 +312,86 @@ export const registerWebhookRoutes = (app: FastifyInstance, prisma: PrismaClient
 
         const result = await webhookService.getDeliveryHistory(id, creator.id, page, pageSize, query.status);
         reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof ValidationError) {
+          reply.code(400).send(formatError(error.message, error.code));
+        } else if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // GET /api/v1/admin/webhooks/dead-letter - List dead-letter queue entries (admin only)
+  app.get<{
+    Querystring: { page?: string; pageSize?: string; webhookId?: string };
+  }>(
+    '/api/v1/admin/webhooks/dead-letter',
+    {
+      preHandler: requireAdmin,
+      schema: {
+        description: 'List webhook dead-letter queue entries (admin only).',
+        querystring: {
+          type: 'object',
+          properties: {
+            page: { type: 'string', default: '1', description: 'Page number' },
+            pageSize: { type: 'string', default: '20', description: 'Items per page (max 100)' },
+            webhookId: { type: 'string', description: 'Filter by webhook ID' },
+          },
+        },
+        response: {
+          200: { type: 'object', additionalProperties: true, description: 'Dead-letter entries with pagination' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
+          403: { type: 'object', additionalProperties: true, description: 'Forbidden' },
+        },
+      } as any,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const query = request.query as { page?: string; pageSize?: string; webhookId?: string };
+        const page = query.page ? parseInt(query.page) : 1;
+        const pageSize = query.pageSize ? parseInt(query.pageSize) : 20;
+
+        const result = await webhookService.getDeadLetterEntries(page, pageSize, query.webhookId);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
+
+  // POST /api/v1/admin/webhooks/dead-letter/:eventId/replay - Replay a dead-letter entry (admin only)
+  app.post<{ Params: { eventId: string } }>(
+    '/api/v1/admin/webhooks/dead-letter/:eventId/replay',
+    {
+      preHandler: requireAdmin,
+      schema: {
+        description: 'Replay a dead-letter webhook delivery (admin only).',
+        params: {
+          type: 'object',
+          properties: {
+            eventId: { type: 'string', description: 'Dead-letter entry event ID' },
+          },
+        },
+        response: {
+          202: { type: 'object', additionalProperties: true, description: 'Dead-letter entry replayed' },
+          401: { type: 'object', additionalProperties: true, description: 'Unauthorized' },
+          403: { type: 'object', additionalProperties: true, description: 'Forbidden' },
+          404: { type: 'object', additionalProperties: true, description: 'Dead-letter entry not found' },
+        },
+      } as any,
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { eventId } = request.params as { eventId: string };
+        await webhookService.replayDeadLetter(eventId);
+        reply.code(202).send(formatSuccess({ message: 'Dead-letter entry replayed' }));
       } catch (error) {
         if (error instanceof ValidationError) {
           reply.code(400).send(formatError(error.message, error.code));

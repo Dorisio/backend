@@ -1,7 +1,7 @@
 import { Worker, Job } from 'bullmq';
 import axios from 'axios';
 import { PrismaClient } from '@prisma/client';
-import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES } from '../queue';
+import { bullConnection, backoffStrategy, moveToDeadLetter, QUEUE_NAMES, webhookRetryQueue } from '../queue';
 import { config } from '../../config/env';
 import { logger } from '../../utils/logger';
 import { executeWithBreaker, CircuitBreakerOpenError } from '../circuit-breaker';
@@ -169,6 +169,55 @@ export function createWebhookDispatchWorker() {
       }
 
       await moveToDeadLetter(QUEUE_NAMES.webhookDispatch, String(job.id), job.data, error.message);
+
+      const rawPayload = typeof job.data.payload === 'string' ? job.data.payload : JSON.stringify(job.data.payload);
+      const nextRetryAt = new Date(Date.now() + 1000).toISOString();
+
+      try {
+        await prisma.webhookDeadLetter.upsert({
+          where: { id: eventId },
+          create: {
+            id: eventId,
+            webhookId: job.data.webhookId,
+            eventId,
+            eventType: job.data.eventType,
+            payload: rawPayload,
+            attempts: job.attemptsMade,
+            lastError: error.message,
+            nextRetryAt,
+          },
+          update: {
+            attempts: job.attemptsMade,
+            lastError: error.message,
+            nextRetryAt,
+            updatedAt: new Date(),
+          },
+        });
+      } catch (dlqError) {
+        logger.error(`Failed to persist webhook dead letter ${eventId}:`, dlqError);
+      }
+
+      try {
+        await webhookRetryQueue.add(
+          'retry-event',
+          {
+            webhookId: job.data.webhookId,
+            eventId,
+            eventType: job.data.eventType,
+            payload: rawPayload,
+            retryCount: 0,
+            requestId: job.data.requestId,
+          },
+          {
+            delay: 1000,
+            jobId: `retry-${eventId}-1`,
+            removeOnComplete: false,
+            removeOnFail: false,
+          }
+        );
+      } catch (enqueueError) {
+        logger.error(`Failed to enqueue webhook retry ${eventId}:`, enqueueError);
+      }
     });
   });
 

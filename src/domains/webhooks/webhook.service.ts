@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { ValidationError, NotFoundError } from '../../utils/errors';
-import { webhookDispatchQueue } from '../../lib/queue';
+import { webhookDispatchQueue, webhookRetryQueue } from '../../lib/queue';
 import { logger } from '../../utils/logger';
 import { getRequestId, withJobTracePayload, withRequestIdPayload } from '../../lib/requestContext';
 import crypto from 'crypto';
@@ -354,6 +354,123 @@ export class WebhookService extends BaseService {
         hasNext: safePage < totalPages,
         hasPrev: safePage > 1,
       };
+    });
+  }
+
+  /**
+   * Get dead-letter queue entries for webhook deliveries that exhausted all retries.
+   * Admin-only: no creator filter, returns all dead-letter entries.
+   */
+  async getDeadLetterEntries(
+    page: number = 1,
+    pageSize: number = 20,
+    webhookId?: string
+  ): Promise<{
+    entries: {
+      id: string;
+      webhookId: string;
+      eventId: string;
+      eventType: string;
+      attempts: number;
+      lastError?: string;
+      nextRetryAt?: string;
+      createdAt: string;
+      updatedAt: string;
+    }[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  }> {
+    return this.executeWithLogging('webhook.deadLetter.list', async () => {
+      const safePage = sanitizePageNumber(page);
+      const safePageSize = sanitizePageSize(pageSize, DEFAULT_PAGE_SIZE);
+      const skip = (safePage - 1) * safePageSize;
+      const where: { webhookId?: string } = {};
+      if (webhookId) {
+        where.webhookId = webhookId;
+      }
+
+      const [entries, total] = await Promise.all([
+        this.prisma.webhookDeadLetter.findMany({
+          where,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip,
+          take: safePageSize,
+        }),
+        this.prisma.webhookDeadLetter.count({ where }),
+      ]);
+
+      const totalPages = Math.ceil(total / safePageSize);
+
+      return {
+        entries: entries.map((e) => ({
+          id: e.id,
+          webhookId: e.webhookId,
+          eventId: e.eventId,
+          eventType: e.eventType,
+          attempts: e.attempts,
+          lastError: e.lastError || undefined,
+          nextRetryAt: e.nextRetryAt?.toISOString(),
+          createdAt: e.createdAt.toISOString(),
+          updatedAt: e.updatedAt.toISOString(),
+        })),
+        total,
+        page: safePage,
+        pageSize: safePageSize,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
+      };
+    });
+  }
+
+  /**
+   * Replay a dead-letter webhook delivery by enqueuing it to the retry queue.
+   */
+  async replayDeadLetter(eventId: string): Promise<void> {
+    return this.executeWithLogging('webhook.deadLetter.replay', async () => {
+      const entry = await this.prisma.webhookDeadLetter.findUnique({
+        where: { id: eventId },
+      });
+
+      if (!entry) {
+        throw new NotFoundError('Dead letter entry');
+      }
+
+      const webhook = await this.prisma.webhook.findUnique({
+        where: { id: entry.webhookId },
+        select: { id: true, active: true, events: true },
+      });
+
+      if (!webhook) {
+        throw new NotFoundError('Webhook');
+      }
+
+      if (!webhook.active) {
+        throw new ValidationError('Webhook is inactive');
+      }
+
+      await webhookRetryQueue.add(
+        'retry-event',
+        {
+          webhookId: entry.webhookId,
+          eventId: entry.eventId,
+          eventType: entry.eventType,
+          payload: entry.payload,
+          retryCount: 0,
+        },
+        {
+          delay: 0,
+          jobId: `replay-${entry.eventId}`,
+          removeOnComplete: false,
+          removeOnFail: false,
+        }
+      );
+
+      logger.info({ eventId: entry.eventId, webhookId: entry.webhookId }, 'Dead letter entry replayed');
     });
   }
 
