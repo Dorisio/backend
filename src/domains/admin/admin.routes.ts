@@ -31,6 +31,101 @@ export const registerAdminRoutes = (app: FastifyInstance, prisma: PrismaClient):
     }
   );
 
+  // POST /api/admin/users/bulk-import - Bulk import users from CSV
+  app.post<{ Body: { csv: string } }>(
+    '/api/v1/admin/users/bulk-import',
+    {
+      preHandler: requireAdmin,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['csv'],
+          properties: {
+            csv: { type: 'string', description: 'CSV content with user data (email,password,name,role)' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              data: {
+                type: 'object',
+                properties: {
+                  total: { type: 'number' },
+                  created: { type: 'number' },
+                  failed: { type: 'number' },
+                  results: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        row: { type: 'number' },
+                        email: { type: 'string' },
+                        status: { type: 'string' },
+                        userId: { type: 'string' },
+                        errors: { type: 'array', items: { type: 'string' } },
+                      },
+                    },
+                  },
+                },
+              },
+              timestamp: { type: 'string' },
+            },
+          },
+          400: { type: 'null', description: 'Validation error' },
+          401: { type: 'null', description: 'Unauthorized' },
+          403: { type: 'null', description: 'Admin only' },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const { csv } = request.body as { csv: string };
+        const result = await adminService.bulkImportUsers(user.userId, csv);
+        return reply.code(200).send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError)
+          return reply.code(error.statusCode).send(formatError(error.message, error.code));
+        throw error;
+      }
+    }
+  );
+
+  // POST /api/admin/users/bulk-import - Bulk import users from CSV (alias prefix)
+  app.post<{ Body: { csv: string } }>(
+    '/api/admin/users/bulk-import',
+    {
+      preHandler: requireAdmin,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['csv'],
+          properties: {
+            csv: { type: 'string', description: 'CSV content with user data (email,password,name,role)' },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found');
+
+        const { csv } = request.body as { csv: string };
+        const result = await adminService.bulkImportUsers(user.userId, csv);
+        return reply.code(200).send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError)
+          return reply.code(error.statusCode).send(formatError(error.message, error.code));
+        throw error;
+      }
+    }
+  );
+
   // POST /api/v1/admin/wallets/:address/flag - Flag wallet
   app.post<{ Params: { address: string }; Body: FlagWalletRequest }>(
     '/api/v1/admin/wallets/:address/flag',

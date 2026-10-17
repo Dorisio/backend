@@ -2,6 +2,8 @@ import { PrismaClient } from '@prisma/client';
 import { BaseService } from '../../services/base.service';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
+import { hashPassword } from '../../utils/password';
+import { UserRole } from '../../utils/roles';
 
 export interface FlagWalletRequest {
   reason: string;
@@ -42,6 +44,277 @@ export class AdminService extends BaseService {
   }
 
   /**
+   * Parse CSV text into header + rows. Supports quoted fields with embedded commas.
+   */
+  private static parseCsv(csvText: string): { headers: string[]; rows: Record<string, string>[] } {
+    const fields: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    let i = 0;
+
+    const pushField = () => {
+      fields.push(current);
+      current = '';
+    };
+
+    while (i < csvText.length) {
+      const char = csvText[i];
+      if (inQuotes) {
+        if (char === '"') {
+          if (i + 1 < csvText.length && csvText[i + 1] === '"') {
+            current += '"';
+            i += 2;
+          } else {
+            inQuotes = false;
+            i++;
+          }
+        } else {
+          current += char;
+          i++;
+        }
+      } else if (char === '"') {
+        inQuotes = true;
+        i++;
+      } else if (char === ',') {
+        pushField();
+        i++;
+      } else if (char === '\r') {
+        i++;
+      } else if (char === '\n') {
+        pushField();
+        i++;
+      } else {
+        current += char;
+        i++;
+      }
+    }
+    if (current !== '' || fields.length > 0) pushField();
+
+    // Re-parse line-oriented for correctness with quoted newlines handled above
+    const lines: string[] = [];
+    current = '';
+    inQuotes = false;
+    i = 0;
+    while (i < csvText.length) {
+      const char = csvText[i];
+      if (inQuotes) {
+        if (char === '"') {
+          if (i + 1 < csvText.length && csvText[i + 1] === '"') {
+            current += '"';
+            i += 2;
+          } else {
+            inQuotes = false;
+            i++;
+          }
+        } else {
+          current += char;
+          i++;
+        }
+      } else if (char === '"') {
+        inQuotes = true;
+        i++;
+      } else if (char === '\r') {
+        i++;
+      } else if (char === '\n') {
+        lines.push(current);
+        current = '';
+        i++;
+      } else {
+        current += char;
+        i++;
+      }
+    }
+    if (current !== '' || lines.length > 0) lines.push(current);
+
+    const nonEmptyLines = lines.filter((line) => line.trim() !== '');
+    if (nonEmptyLines.length === 0) {
+      return { headers: [], rows: [] };
+    }
+
+    const splitLine = (line: string): string[] => {
+      const vals: string[] = [];
+      let val = '';
+      inQuotes = false;
+      for (let j = 0; j < line.length; j++) {
+        const c = line[j];
+        if (inQuotes) {
+          if (c === '"') {
+            if (j + 1 < line.length && line[j + 1] === '"') {
+              val += '"';
+              j++;
+            } else {
+              inQuotes = false;
+            }
+          } else {
+            val += c;
+          }
+        } else if (c === '"') {
+          inQuotes = true;
+        } else if (c === ',') {
+          vals.push(val);
+          val = '';
+        } else {
+          val += c;
+        }
+      }
+      vals.push(val);
+      return vals;
+    };
+
+    const headers = splitLine(nonEmptyLines[0]).map((h) => h.trim());
+    const rows: Record<string, string>[] = [];
+    for (let k = 1; k < nonEmptyLines.length; k++) {
+      const values = splitLine(nonEmptyLines[k]);
+      const row: Record<string, string> = {};
+      headers.forEach((header, idx) => {
+        row[header] = values[idx] !== undefined ? values[idx] : '';
+      });
+      rows.push(row);
+    }
+
+    return { headers, rows };
+  }
+
+  /**
+   * Bulk import users from CSV. Validates all rows before creating any user.
+   * Creates users in a single transaction; rolls back on any error.
+   */
+  async bulkImportUsers(adminUserId: string, csvText: string): Promise<{
+    total: number;
+    created: number;
+    failed: number;
+    results: Array<{
+      row: number;
+      email: string;
+      status: 'created' | 'failed';
+      userId?: string;
+      errors?: string[];
+    }>;
+  }> {
+    if (!(await this.isAdmin(adminUserId))) {
+      throw new UnauthorizedError('Only admins can bulk import users');
+    }
+
+    const { headers, rows } = AdminService.parseCsv(csvText);
+
+    if (rows.length === 0) {
+      throw new ValidationError('CSV contains no data rows');
+    }
+
+    const requiredHeaders = ['email', 'password'];
+    const missingHeaders = requiredHeaders.filter((h) => !headers.includes(h));
+    if (missingHeaders.length > 0) {
+      throw new ValidationError(`Missing required CSV columns: ${missingHeaders.join(', ')}`);
+    }
+
+    const validRoles = ['fan', 'creator', 'admin'];
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    // Phase 1: validate all rows before creating any user (fail-fast)
+    const rowErrors = new Map<number, string[]>();
+    const seenEmails = new Set<string>();
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2; // header is row 1, data is 1-indexed
+      const errors: string[] = [];
+
+      const email = (row.email || '').trim();
+      const password = (row.password || '').trim();
+      const role = ((row.role || 'fan').trim() || 'fan') as string;
+
+      if (!email) {
+        errors.push('Email is required');
+      } else if (!emailRegex.test(email)) {
+        errors.push('Invalid email format');
+      } else if (seenEmails.has(email)) {
+        errors.push('Duplicate email in CSV');
+      } else {
+        seenEmails.add(email);
+        const existing = await this.prisma.user.findUnique({ where: { email } });
+        if (existing) {
+          errors.push('Email already registered');
+        }
+      }
+
+      if (!password) {
+        errors.push('Password is required');
+      } else if (password.length < 8) {
+        errors.push('Password must be at least 8 characters');
+      } else if (password.length > 128) {
+        errors.push('Password must be at most 128 characters');
+      }
+
+      if (role && !validRoles.includes(role)) {
+        errors.push("Invalid role (must be 'fan', 'creator', or 'admin')");
+      }
+
+      if (errors.length > 0) {
+        rowErrors.set(rowNum, errors);
+      }
+    }
+
+    if (rowErrors.size > 0) {
+      const details: Record<string, unknown> = {};
+      rows.forEach((row, i) => {
+        const rowNum = i + 2;
+        const errors = rowErrors.get(rowNum);
+        if (errors) {
+          details[rowNum] = {
+            email: (row.email || '').trim(),
+            errors,
+          };
+        }
+      });
+      throw new ValidationError('One or more rows contain invalid data', { details });
+    }
+
+    // Phase 2: create all users in a transaction; rollback on any error
+    const results = await this.prisma.$transaction(async (tx) => {
+      const createdResults: Array<{
+        row: number;
+        email: string;
+        status: 'created' | 'failed';
+        userId?: string;
+        errors?: string[];
+      }> = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNum = i + 2;
+        const hashedPassword = await hashPassword((row.password || '').trim());
+        const user = await tx.user.create({
+          data: {
+            email: (row.email || '').trim(),
+            password: hashedPassword,
+            name: (row.name || '').trim() || null,
+            role: ((row.role || 'fan').trim() || 'fan') as string,
+          },
+        });
+        createdResults.push({
+          row: rowNum,
+          email: (row.email || '').trim(),
+          status: 'created' as const,
+          userId: user.id,
+        });
+      }
+
+      return createdResults;
+    });
+
+    const created = results.filter((r) => r.status === 'created').length;
+
+    logger.info(`Bulk user import by admin ${adminUserId}: ${created}/${rows.length} created`);
+
+    return {
+      total: rows.length,
+      created,
+      failed: rows.length - created,
+      results,
+    };
+  }
+
+  /**
    * Check if user is admin
    */
   private async isAdmin(userId: string): Promise<boolean> {
@@ -49,7 +322,7 @@ export class AdminService extends BaseService {
       where: { id: userId },
       select: { role: true },
     });
-    return user?.role === 'ADMIN';
+    return user?.role === UserRole.ADMIN;
   }
 
   /**
