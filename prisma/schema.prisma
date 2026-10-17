@@ -461,6 +461,28 @@ model WebhookEvent {
   @@index([status, createdAt], map: "idx_webhookEvent_status_createdAt")
 }
 
+// Dead-letter queue for webhook deliveries that exhausted all retry attempts.
+// Entries are queryable and replayable via the admin API.
+model WebhookDeadLetter {
+  id        String  @id @default(cuid())
+  webhookId String
+  webhook   Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  eventId   String // References WebhookEvent.id
+  eventType String
+  payload   String // JSON payload
+  attempts  Int
+  lastError String?
+  nextRetryAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([webhookId, createdAt(sort: Desc)])
+  @@index([createdAt])
+  @@index([nextRetryAt])
+}
+
 // A payment processed by an external provider (Stripe et al). Raw card data is
 // never stored — only provider references and tokenized intent ids.
 model Payment {

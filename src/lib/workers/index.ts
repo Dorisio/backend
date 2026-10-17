@@ -10,6 +10,7 @@ import { createExportsWorker } from './exports.worker';
 import { createImageProcessingWorker } from './image-processing.worker';
 import { createStellarConfirmationWorker } from './stellar-confirmation.worker';
 import { createWebhookDispatchWorker } from './webhook-dispatch.worker';
+import { createWebhookRetryWorker } from './webhook-retry.worker';
 
 /**
  * Registers the recurring jobs workers rely on. Idempotent: repeatable jobs
@@ -31,6 +32,7 @@ export async function startWorkers(prisma?: PrismaClient) {
   const workers = [
     createStellarConfirmationWorker(),
     createWebhookDispatchWorker(),
+    createWebhookRetryWorker(),
     createEmailWorker(),
     createImageProcessingWorker(prisma),
     createAnalyticsWorker(),
